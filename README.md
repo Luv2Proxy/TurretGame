@@ -14,5 +14,6 @@ A fast-paced 2D wave-survival turret game built with HTML5 Canvas.
 
 - Center-core turret combat with directional aiming.
 - Multiple enemy archetypes (runners, tanks, splitters, leeches, bombers).
-- Level-up choices including shielding, poison rounds, lifesteal, chain lightning, pulse blasts, orbitals, and more.
-- Endless wave scaling and score progression.
+- Level-up choices including shielding, poison rounds, lifesteal, chain lightning, pulse blasts, orbitals, crit builds, dodges, executes, and more.
+- Visible active-upgrade loadout panel that tracks your current build.
+- Improved wave scaling with budget-based spawns and periodic elite threats.
