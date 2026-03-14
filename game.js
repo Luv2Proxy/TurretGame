@@ -134,12 +134,33 @@ const upgrades = [
   { name: "Shield Radius Array", desc: "Rotating shields orbit farther out", apply: () => (turret.rotatingShieldRadius += 10), tree: "Shield Grid", requires: ["Rotating Shield Node"] },
 ];
 
+const modWeapons = [];
+const enemyAIs = {};
+
+enemyAIs["chase"] = function(enemy, dt, ctx) {
+  const {center} = ctx;
+
+  const dx = center.x - enemy.x;
+  const dy = center.y - enemy.y;
+  const dist = Math.hypot(dx, dy) || 1;
+
+  enemy.x += (dx / dist) * enemy.speed * dt + enemy.kbX * dt;
+  enemy.y += (dy / dist) * enemy.speed * dt + enemy.kbY * dt;
+};
+
 const ModAPI = {
   registerEnemy(def) {
     if (!def?.id) throw new Error("Enemy must have id");
     const normalized = { cost: 10, xp: 20, radius: 12, speed: 60, touch: 12, color: "#ffffff", hp: 60, ...def };
     enemyTypes.push(normalized);
     state.modEnemyById.set(normalized.id, normalized);
+  },
+  registerWeapon = function(def){
+    if (!def.fire) throw new Error("Weapon must fire.")
+    modWeapons.push(def);
+  },
+  registerEnemyAI = function(id, updateFn){
+    enemyAIs[id] = updateFn;
   },
   registerUpgrade(def) {
     if (!def?.name || typeof def.apply !== "function") throw new Error("Upgrade requires name + apply");
@@ -247,6 +268,7 @@ function spawnEnemy(type = pickEnemyType(), elite = false, overrides = {}) {
     x: p.x,
     y: p.y,
     type,
+    ai: type.ai || "chase",
     hp: type.hp * waveScale * eliteScale,
     maxHp: type.hp * waveScale * eliteScale,
     speed: type.speed * (1 + state.wave * 0.015) * (elite ? 1.08 : 1),
@@ -298,6 +320,9 @@ function tryShoot(dt) {
   turret.shootCd = 1 / (turret.fireRate + turret.overdrive);
   for (let i = 0; i < turret.multiShot; i++) {
     fireBullet(turret.angle + (i - (turret.multiShot - 1) / 2) * 0.09 + rand(-turret.spread, turret.spread));
+  }
+  for(const weapon of modWeapons){
+    weapon.fire(ModAPI.getContext());
   }
 }
 
@@ -539,10 +564,16 @@ function update(dt) {
     const dx = center.x - enemy.x;
     const dy = center.y - enemy.y;
     const dist = Math.hypot(dx, dy) || 1;
-    enemy.x += (dx / dist) * enemy.speed * dt + enemy.kbX * dt;
-    enemy.y += (dy / dist) * enemy.speed * dt + enemy.kbY * dt;
+    const ai = enemyAIs[enemy.ai] || enemyAIs["chase"];
+    ai(enemy, dt, {
+      center,
+      state,
+      turret
+    });
     enemy.kbX *= 0.82;
     enemy.kbY *= 0.82;
+    enemy.attackCooldown ??= 0;
+    enemy.attackCooldown -= dt;
 
     if (enemy.poisonTimer > 0) { enemy.poisonTimer -= dt; enemy.hp -= enemy.poison * dt; }
     if (enemy.burnTimer > 0) { enemy.burnTimer -= dt; enemy.hp -= enemy.burn * dt; }
@@ -553,15 +584,23 @@ function update(dt) {
       const nx = (enemy.x - center.x) / (coreDist || 1);
       const ny = (enemy.y - center.y) / (coreDist || 1);
       const pushOut = minDist - coreDist;
+    
       enemy.x += nx * pushOut;
       enemy.y += ny * pushOut;
+    
       enemy.kbX += nx * 8;
       enemy.kbY += ny * 8;
-      enemy.contactTimer += dt;
-      if (enemy.contactTimer >= 0.08) { dealTurretDamage(enemy.type.touch * 0.5); enemy.contactTimer = 0; }
-      if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 4) enemy.hp -= turret.bulletDamage * 0.85;
+    
+      if (enemy.attackCooldown <= 0) {
+        dealTurretDamage(enemy.type.touch);
+        enemy.attackCooldown = 0.4; // enemy attacks every 0.4s
+      }
+    
+      if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 4)
+        enemy.hp -= turret.bulletDamage * 0.85;
+    
       if (enemy.type.id === "bomber") enemy.hp = -1;
-    } else enemy.contactTimer = 0;
+    }
 
     enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
     if (enemy.hp <= 0) onEnemyKilled(enemy);
