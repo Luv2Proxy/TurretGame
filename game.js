@@ -11,9 +11,12 @@ const ui = {
   subtitle: document.getElementById("overlaySubtitle"),
   choices: document.getElementById("choices"),
   upgradeList: document.getElementById("upgradeList"),
+  modPanels: document.getElementById("modPanels"),
 };
 
 const center = { x: canvas.width / 2, y: canvas.height / 2 };
+const TURRET_RADIUS = 24;
+const CORE_COLLISION_RADIUS = 34;
 const keys = new Set();
 const mouse = { x: center.x, y: center.y, down: false };
 
@@ -32,9 +35,22 @@ const state = {
   enemies: [],
   particles: [],
   effects: [],
+  modProjectiles: [],
   score: 0,
   shake: 0,
   activeUpgrades: [],
+  modHooks: {
+    onInit: [],
+    onUpdate: [],
+    onDraw: [],
+    onEnemyKilled: [],
+    onEnemySpawn: [],
+    onUpgradeAwarded: [],
+    onWaveStart: [],
+    onShoot: [],
+  },
+  modEffectDrawers: {},
+  modEnemyById: new Map(),
 };
 
 const turret = {
@@ -48,6 +64,7 @@ const turret = {
   bulletSpeed: 520,
   bulletDamage: 18,
   bulletSize: 4,
+  bulletKnockback: 90,
   spread: 0,
   multiShot: 1,
   pierce: 0,
@@ -55,13 +72,14 @@ const turret = {
   critMult: 2,
   burn: 0,
   poison: 0,
+  poisonDuration: 2.8,
+  burnDuration: 2.3,
   lifesteal: 0,
   chainChance: 0,
   chainRange: 130,
   chainDamageFactor: 0.55,
   shieldOnKill: 0,
   vampBurst: 0,
-  orbitals: 0,
   pulseEvery: 0,
   pulseTimer: 0,
   overdrive: 0,
@@ -72,6 +90,16 @@ const turret = {
   dodgeChance: 0,
   regen: 0,
   shockTouch: 0,
+  orbitals: 0,
+  orbitalFireRate: 6.2,
+  orbitalDamageMult: 0.52,
+  orbitalPierceBonus: 0,
+  orbitalRange: 190,
+  rotatingShields: 0,
+  rotatingShieldRadius: 66,
+  rotatingShieldSpeed: 1.8,
+  rotatingShieldDamage: 22,
+  rotatingShieldKnockback: 250,
   shootCd: 0,
   level: 1,
   xp: 0,
@@ -83,18 +111,7 @@ const enemyTypes = [
   { id: "tank", color: "#ffd166", radius: 18, hp: 120, speed: 42, touch: 18, xp: 28, cost: 13 },
   { id: "splitter", color: "#8bff95", radius: 14, hp: 56, speed: 67, touch: 13, xp: 18, splitOnDeath: true, cost: 9 },
   { id: "leech", color: "#9f8cff", radius: 11, hp: 46, speed: 78, touch: 10, xp: 16, dodge: 0.18, cost: 10 },
-  {
-    id: "bomber",
-    color: "#ff9a3d",
-    radius: 15,
-    hp: 76,
-    speed: 55,
-    touch: 10,
-    xp: 20,
-    explodeRange: 75,
-    explodeDamage: 22,
-    cost: 12,
-  },
+  { id: "bomber", color: "#ff9a3d", radius: 15, hp: 76, speed: 55, touch: 10, xp: 20, explodeRange: 75, explodeDamage: 22, cost: 12 },
 ];
 
 const upgrades = [
@@ -107,21 +124,89 @@ const upgrades = [
   { name: "Corrosive Fire", desc: "Bullets ignite for +10 burn DoT", apply: () => (turret.burn += 10) },
   { name: "Chain Arc", desc: "+16% chain lightning proc chance", apply: () => (turret.chainChance += 0.16) },
   { name: "Blood Battery", desc: "Gain 6 shield on kill (+10 max)", apply: () => { turret.shieldOnKill += 6; turret.maxShield += 10; } },
-  { name: "Orbital Drones", desc: "Spawn an orbiting drone blaster", apply: () => (turret.orbitals += 1) },
+  { name: "Orbital Drones", desc: "Spawn an orbiting drone blaster", apply: () => (turret.orbitals += 1), tree: "Orbitals" },
+  { name: "Orbital Accelerator", desc: "Orbitals fire 24% faster", apply: () => (turret.orbitalFireRate *= 1.24), tree: "Orbitals", requires: ["Orbital Drones"] },
+  { name: "Orbital Rail Mod", desc: "Orbitals deal +22% damage", apply: () => (turret.orbitalDamageMult *= 1.22), tree: "Orbitals", requires: ["Orbital Drones"] },
+  { name: "Orbital Piercer", desc: "Orbitals gain +1 pierce", apply: () => (turret.orbitalPierceBonus += 1), tree: "Orbitals", requires: ["Orbital Drones"] },
   { name: "Sonic Pulse", desc: "Emit AoE every 7s (stack = faster)", apply: () => { turret.pulseEvery = Math.max(2.8, turret.pulseEvery ? turret.pulseEvery - 0.8 : 7); turret.pulseTimer = 0; } },
-  { name: "Berserk Protocol", desc: "Taking damage grants overdrive", apply: () => (turret.vampBurst += 1) },
-  { name: "Titan Core", desc: "+35 max HP and +2 regen", apply: () => { turret.maxHp += 35; turret.hp += 35; turret.regen += 2; } },
-  { name: "Plasma Spread", desc: "+0.025 spread for wider cone", apply: () => (turret.spread += 0.025) },
-  { name: "High Velocity", desc: "+20% bullet speed, +2 damage", apply: () => { turret.bulletSpeed *= 1.2; turret.bulletDamage += 2; } },
-  { name: "Execution Protocol", desc: "Execute enemies below +7% HP", apply: () => (turret.executeThreshold += 0.07) },
-  { name: "Armor Shred", desc: "Bullets deal 10% more to healthy targets", apply: () => (turret.armorShred += 0.1) },
-  { name: "Static Armor", desc: "20% chance to zap touching enemies", apply: () => (turret.shockTouch += 0.2) },
-  { name: "Ricochet Matrix", desc: "18% chance bullets bounce once", apply: () => (turret.ricochetChance += 0.18) },
-  { name: "Phase Plating", desc: "+6% chance to dodge incoming damage", apply: () => (turret.dodgeChance += 0.06) },
-  { name: "Critical Lens", desc: "+9% crit chance", apply: () => (turret.critChance += 0.09) },
-  { name: "Critical Core", desc: "+0.45 crit multiplier", apply: () => (turret.critMult += 0.45) },
-  { name: "Heavy Caliber", desc: "+7 bullet damage", apply: () => (turret.bulletDamage += 7) },
+  { name: "Rotating Shield Node", desc: "Gain an always-on rotating shield", apply: () => (turret.rotatingShields += 1), tree: "Shield Grid" },
+  { name: "Shield Gyros", desc: "Rotating shields spin faster/hit harder", apply: () => { turret.rotatingShieldSpeed += 0.4; turret.rotatingShieldDamage += 8; }, tree: "Shield Grid", requires: ["Rotating Shield Node"] },
+  { name: "Shield Radius Array", desc: "Rotating shields orbit farther out", apply: () => (turret.rotatingShieldRadius += 10), tree: "Shield Grid", requires: ["Rotating Shield Node"] },
 ];
+
+const ModAPI = {
+  registerEnemy(def) {
+    if (!def?.id) throw new Error("Enemy must have id");
+    const normalized = { cost: 10, xp: 20, radius: 12, speed: 60, touch: 12, color: "#ffffff", hp: 60, ...def };
+    enemyTypes.push(normalized);
+    state.modEnemyById.set(normalized.id, normalized);
+  },
+  registerUpgrade(def) {
+    if (!def?.name || typeof def.apply !== "function") throw new Error("Upgrade requires name + apply");
+    upgrades.push(def);
+  },
+  registerHook(type, fn) {
+    if (!state.modHooks[type]) throw new Error(`Unknown hook ${type}`);
+    state.modHooks[type].push(fn);
+  },
+  registerEffectType(type, draw) {
+    state.modEffectDrawers[type] = draw;
+  },
+  spawnEnemy(typeOrId, overrides = {}) {
+    const base = typeof typeOrId === "string" ? state.modEnemyById.get(typeOrId) || enemyTypes.find((e) => e.id === typeOrId) : typeOrId;
+    if (base) spawnEnemy(base, false, overrides);
+  },
+  spawnProjectile(projectileDef) {
+    state.modProjectiles.push({ life: 2, radius: 4, ...projectileDef });
+  },
+  addPanel(id, title, renderText = "") {
+    const box = document.createElement("div");
+    box.className = "mod-panel";
+    box.id = `mod-panel-${id}`;
+    box.innerHTML = `<h3>${title}</h3><div>${renderText}</div>`;
+    ui.modPanels.appendChild(box);
+    return {
+      setHtml(html) {
+        box.querySelector("div").innerHTML = html;
+      },
+    };
+  },
+  addEffect(effect) {
+    state.effects.push(effect);
+  },
+  getContext() {
+    return { state, turret, center, canvas, ctx, rand, clamp };
+  },
+};
+window.TurretGameModAPI = ModAPI;
+
+function callHooks(type, payload = {}) {
+  for (const hook of state.modHooks[type]) {
+    try {
+      hook(payload, ModAPI.getContext());
+    } catch (err) {
+      console.error(`[mod hook:${type}]`, err);
+    }
+  }
+}
+
+async function loadMods() {
+  try {
+    const manifest = await fetch("mods/mods.json").then((r) => (r.ok ? r.json() : []));
+    for (const modPath of manifest) {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = modPath;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.body.appendChild(script);
+      });
+    }
+    callHooks("onInit", {});
+  } catch {
+    // no mods installed, continue silently
+  }
+}
 
 function refreshUpgradeList() {
   ui.upgradeList.innerHTML = "";
@@ -129,36 +214,36 @@ function refreshUpgradeList() {
     ui.upgradeList.innerHTML = "<li>None yet — level up to choose boosts.</li>";
     return;
   }
-  state.activeUpgrades.slice(-11).forEach((upgrade) => {
+  state.activeUpgrades.slice(-14).forEach((u) => {
     const li = document.createElement("li");
-    li.textContent = `${upgrade.name} ${upgrade.stacks > 1 ? `x${upgrade.stacks}` : ""}`;
+    li.textContent = `${u.name}${u.stacks > 1 ? ` x${u.stacks}` : ""}`;
     ui.upgradeList.appendChild(li);
   });
 }
 
 function enemyAtEdge() {
-  const pad = 30;
-  const side = Math.floor(rand(0, 4));
-  if (side === 0) return { x: rand(-pad, canvas.width + pad), y: -pad };
-  if (side === 1) return { x: canvas.width + pad, y: rand(-pad, canvas.height + pad) };
-  if (side === 2) return { x: rand(-pad, canvas.width + pad), y: canvas.height + pad };
-  return { x: -pad, y: rand(-pad, canvas.height + pad) };
+  const p = 30;
+  const s = Math.floor(rand(0, 4));
+  if (s === 0) return { x: rand(-p, canvas.width + p), y: -p };
+  if (s === 1) return { x: canvas.width + p, y: rand(-p, canvas.height + p) };
+  if (s === 2) return { x: rand(-p, canvas.width + p), y: canvas.height + p };
+  return { x: -p, y: rand(-p, canvas.height + p) };
 }
 
 function pickEnemyType() {
-  const wave = state.wave;
-  const chance = Math.random();
-  if (wave < 3) return chance < 0.76 ? enemyTypes[0] : enemyTypes[2];
-  if (wave < 6) return chance < 0.5 ? enemyTypes[0] : chance < 0.8 ? enemyTypes[2] : enemyTypes[1];
-  if (wave < 10) return chance < 0.33 ? enemyTypes[0] : chance < 0.56 ? enemyTypes[2] : chance < 0.82 ? enemyTypes[1] : enemyTypes[3];
-  return chance < 0.22 ? enemyTypes[0] : chance < 0.45 ? enemyTypes[1] : chance < 0.66 ? enemyTypes[2] : chance < 0.85 ? enemyTypes[3] : enemyTypes[4];
+  const w = state.wave;
+  const r = Math.random();
+  if (w < 3) return r < 0.76 ? enemyTypes[0] : enemyTypes[2];
+  if (w < 6) return r < 0.5 ? enemyTypes[0] : r < 0.8 ? enemyTypes[2] : enemyTypes[1];
+  if (w < 10) return r < 0.33 ? enemyTypes[0] : r < 0.56 ? enemyTypes[2] : r < 0.82 ? enemyTypes[1] : enemyTypes[3];
+  return enemyTypes[Math.floor(rand(0, enemyTypes.length))];
 }
 
-function spawnEnemy(type = pickEnemyType(), elite = false) {
+function spawnEnemy(type = pickEnemyType(), elite = false, overrides = {}) {
   const p = enemyAtEdge();
   const waveScale = 1 + state.wave * 0.1;
   const eliteScale = elite ? 1.8 : 1;
-  state.enemies.push({
+  const enemy = {
     x: p.x,
     y: p.y,
     type,
@@ -170,11 +255,27 @@ function spawnEnemy(type = pickEnemyType(), elite = false) {
     burnTimer: 0,
     poisonTimer: 0,
     hitFlash: 0,
+    kbX: 0,
+    kbY: 0,
+    contactTimer: 0,
+    dead: false,
     elite,
-  });
+    ...overrides,
+  };
+  state.enemies.push(enemy);
+  callHooks("onEnemySpawn", { enemy });
+  return enemy;
 }
 
-function fireBullet(angle, dmgMult = 1, speedMult = 1, size = turret.bulletSize) {
+function pushEnemy(enemy, fromX, fromY, force) {
+  const dx = enemy.x - fromX;
+  const dy = enemy.y - fromY;
+  const d = Math.hypot(dx, dy) || 1;
+  enemy.kbX += (dx / d) * force;
+  enemy.kbY += (dy / d) * force;
+}
+
+function fireBullet(angle, dmgMult = 1, speedMult = 1, size = turret.bulletSize, pierceBonus = 0) {
   state.bullets.push({
     x: center.x + Math.cos(angle) * 30,
     y: center.y + Math.sin(angle) * 30,
@@ -182,32 +283,27 @@ function fireBullet(angle, dmgMult = 1, speedMult = 1, size = turret.bulletSize)
     vy: Math.sin(angle) * turret.bulletSpeed * speedMult,
     damage: turret.bulletDamage * dmgMult,
     radius: size,
-    pierce: turret.pierce,
+    pierce: turret.pierce + pierceBonus,
     poison: turret.poison,
     burn: turret.burn,
     dead: false,
   });
+  callHooks("onShoot", { angle });
 }
 
 function tryShoot(dt) {
   const firing = mouse.down || keys.has(" ");
   turret.shootCd -= dt;
   if (!firing || turret.shootCd > 0) return;
-
   turret.shootCd = 1 / (turret.fireRate + turret.overdrive);
   for (let i = 0; i < turret.multiShot; i++) {
-    const spreadOffset = (i - (turret.multiShot - 1) / 2) * 0.09 + rand(-turret.spread, turret.spread);
-    fireBullet(turret.angle + spreadOffset);
+    fireBullet(turret.angle + (i - (turret.multiShot - 1) / 2) * 0.09 + rand(-turret.spread, turret.spread));
   }
 }
 
 function dealTurretDamage(amount) {
   if (amount <= 0 || state.gameOver) return;
-  if (Math.random() < turret.dodgeChance) {
-    state.effects.push({ type: "text", text: "DODGE", x: center.x + rand(-20, 20), y: center.y - 36, color: "#75f8ff", life: 0.32 });
-    return;
-  }
-
+  if (Math.random() < turret.dodgeChance) return;
   let remaining = amount;
   if (turret.shield > 0) {
     const absorbed = Math.min(turret.shield, remaining);
@@ -217,7 +313,6 @@ function dealTurretDamage(amount) {
   turret.hp -= remaining;
   if (turret.vampBurst > 0) turret.overdriveTimer = Math.max(turret.overdriveTimer, 3.1);
   state.shake = Math.min(18, state.shake + amount * 0.26);
-
   if (turret.hp <= 0) {
     turret.hp = 0;
     state.gameOver = true;
@@ -230,47 +325,28 @@ function onEnemyKilled(enemy) {
   enemy.dead = true;
   state.score += enemy.type.xp * (enemy.elite ? 1.6 : 1);
   gainXp(enemy.type.xp * (enemy.elite ? 1.3 : 1));
-
   if (turret.shieldOnKill > 0) turret.shield = Math.min(turret.maxShield, turret.shield + turret.shieldOnKill);
 
   if (enemy.type.splitOnDeath && !enemy.elite) {
-    for (let i = 0; i < 2; i++) {
-      state.enemies.push({
-        x: enemy.x + rand(-8, 8),
-        y: enemy.y + rand(-8, 8),
-        type: enemyTypes[0],
-        hp: 23 + state.wave * 1.9,
-        maxHp: 23 + state.wave * 1.9,
-        speed: 116 + state.wave * 2,
-        burn: 0,
-        poison: 0,
-        burnTimer: 0,
-        poisonTimer: 0,
-        hitFlash: 0,
-      });
-    }
+    for (let i = 0; i < 2; i++) spawnEnemy(enemyTypes[0], false, { x: enemy.x + rand(-8, 8), y: enemy.y + rand(-8, 8), hp: 23 + state.wave * 1.9, maxHp: 23 + state.wave * 1.9, speed: 116 + state.wave * 2 });
   }
-
   if (enemy.type.explodeRange) blast(enemy.x, enemy.y, enemy.type.explodeRange, enemy.type.explodeDamage, true);
 
-  for (let i = 0; i < 10; i++) {
-    state.particles.push({ x: enemy.x, y: enemy.y, vx: rand(-120, 120), vy: rand(-120, 120), life: rand(0.2, 0.5), color: enemy.type.color, radius: rand(1.4, 3.1) });
-  }
+  callHooks("onEnemyKilled", { enemy });
 }
 
 function blast(x, y, range, damage, hurtsTurret = false) {
   state.effects.push({ type: "ring", x, y, radius: 8, max: range, life: 0.3, color: "#9befff88" });
   for (const enemy of state.enemies) {
+    if (enemy.dead) continue;
     const d = Math.hypot(enemy.x - x, enemy.y - y);
     if (d < range) {
       enemy.hp -= damage * (1 - (d / range) * 0.65);
       enemy.hitFlash = 0.12;
+      pushEnemy(enemy, x, y, 160 * (1 - d / range));
     }
   }
-  if (hurtsTurret) {
-    const distTurret = Math.hypot(center.x - x, center.y - y);
-    if (distTurret < range + 24) dealTurretDamage(damage);
-  }
+  if (hurtsTurret && Math.hypot(center.x - x, center.y - y) < range + TURRET_RADIUS) dealTurretDamage(damage);
 }
 
 function gainXp(amount) {
@@ -286,29 +362,49 @@ function gainXp(amount) {
 function chainLightning(fromEnemy, depth = 0, hit = new Set()) {
   if (depth > 3) return;
   hit.add(fromEnemy);
-  const candidates = state.enemies
-    .filter((enemy) => !hit.has(enemy) && !enemy.dead)
-    .map((enemy) => ({ enemy, d: Math.hypot(enemy.x - fromEnemy.x, enemy.y - fromEnemy.y) }))
-    .filter((entry) => entry.d <= turret.chainRange)
-    .sort((a, b) => a.d - b.d);
-  if (!candidates.length) return;
-
-  const target = candidates[0].enemy;
-  const damage = turret.bulletDamage * turret.chainDamageFactor * (1 - depth * 0.14);
-  target.hp -= damage;
+  const next = state.enemies
+    .filter((e) => !e.dead && !hit.has(e))
+    .map((e) => ({ enemy: e, d: Math.hypot(e.x - fromEnemy.x, e.y - fromEnemy.y) }))
+    .filter((e) => e.d <= turret.chainRange)
+    .sort((a, b) => a.d - b.d)[0];
+  if (!next) return;
+  const target = next.enemy;
+  target.hp -= turret.bulletDamage * turret.chainDamageFactor * (1 - depth * 0.14);
   target.hitFlash = 0.2;
+  pushEnemy(target, fromEnemy.x, fromEnemy.y, 90);
   state.effects.push({ type: "bolt", x1: fromEnemy.x, y1: fromEnemy.y, x2: target.x, y2: target.y, life: 0.09 });
-
   if (target.hp <= 0) onEnemyKilled(target);
   chainLightning(target, depth + 1, hit);
 }
 
+function updateRotatingShields(dt) {
+  if (!turret.rotatingShields) return;
+  for (let i = 0; i < turret.rotatingShields; i++) {
+    const angle = state.time * turret.rotatingShieldSpeed + (Math.PI * 2 * i) / turret.rotatingShields;
+    const sx = center.x + Math.cos(angle) * turret.rotatingShieldRadius;
+    const sy = center.y + Math.sin(angle) * turret.rotatingShieldRadius;
+    for (const enemy of state.enemies) {
+      if (enemy.dead) continue;
+      if (Math.hypot(enemy.x - sx, enemy.y - sy) <= enemy.type.radius + 10) {
+        enemy.hp -= turret.rotatingShieldDamage * dt * 2;
+        enemy.hitFlash = 0.12;
+        pushEnemy(enemy, sx, sy, turret.rotatingShieldKnockback * dt);
+      }
+    }
+  }
+}
+
 function awardUpgrade(upgrade) {
   upgrade.apply();
-  const existing = state.activeUpgrades.find((entry) => entry.name === upgrade.name);
+  const existing = state.activeUpgrades.find((x) => x.name === upgrade.name);
   if (existing) existing.stacks += 1;
   else state.activeUpgrades.push({ name: upgrade.name, stacks: 1 });
   refreshUpgradeList();
+  callHooks("onUpgradeAwarded", { upgrade });
+}
+
+function eligibleUpgrades() {
+  return upgrades.filter((u) => !u.requires || u.requires.every((r) => state.activeUpgrades.some((x) => x.name === r)));
 }
 
 function showUpgradeSelection() {
@@ -317,14 +413,13 @@ function showUpgradeSelection() {
   ui.title.textContent = `Level ${turret.level} upgrade`;
   ui.subtitle.textContent = "Pick your power spike";
   ui.choices.innerHTML = "";
-
-  const picks = [...upgrades].sort(() => Math.random() - 0.5).slice(0, 3);
-  picks.forEach((upgrade) => {
+  const picks = [...eligibleUpgrades()].sort(() => Math.random() - 0.5).slice(0, 3);
+  picks.forEach((u) => {
     const card = document.createElement("button");
     card.className = "choice";
-    card.innerHTML = `<h3>${upgrade.name}</h3><p>${upgrade.desc}</p>`;
+    card.innerHTML = `<h3>${u.name}</h3><p>${u.desc}${u.tree ? ` · Tree: ${u.tree}` : ""}</p>`;
     card.onclick = () => {
-      awardUpgrade(upgrade);
+      awardUpgrade(u);
       ui.overlay.classList.add("hidden");
       state.pausedForUpgrade = false;
     };
@@ -347,19 +442,36 @@ function showEnd() {
 
 function startNextWave() {
   state.wave += 1;
-  const baseBudget = 28 + state.wave * 8 + Math.pow(state.wave, 1.28) * 2.4;
-  state.enemyBudget = Math.floor(baseBudget);
+  state.enemyBudget = Math.floor(28 + state.wave * 8 + Math.pow(state.wave, 1.28) * 2.4);
   state.spawnRate = clamp(0.76 - state.wave * 0.017, 0.16, 1);
   gainXp(30 + state.wave * 7);
+  if (state.wave % 5 === 0) spawnEnemy(enemyTypes[Math.min(enemyTypes.length - 1, Math.floor(state.wave / 4))], true);
+  callHooks("onWaveStart", { wave: state.wave });
+}
 
-  if (state.wave % 5 === 0) {
-    spawnEnemy(enemyTypes[Math.min(4, Math.floor(state.wave / 4))], true);
+function updateModProjectiles(dt) {
+  for (const p of state.modProjectiles) {
+    p.life -= dt;
+    if (p.update) p.update(p, dt, ModAPI.getContext());
+    else {
+      p.x += (p.vx || 0) * dt;
+      p.y += (p.vy || 0) * dt;
+    }
+
+    for (const enemy of state.enemies) {
+      if (enemy.dead) continue;
+      const hitDist = (p.radius || 4) + enemy.type.radius;
+      if (Math.hypot(p.x - enemy.x, p.y - enemy.y) <= hitDist) {
+        if (p.onHit) p.onHit(enemy, p, ModAPI.getContext());
+        if (!p.piercing) p.life = 0;
+      }
+    }
   }
+  state.modProjectiles = state.modProjectiles.filter((p) => p.life > 0);
 }
 
 function update(dt) {
   if (state.pausedForUpgrade || state.gameOver) return;
-
   state.time += dt;
   state.shake *= 0.86;
   turret.overdrive = turret.overdriveTimer > 0 ? 4.8 : 0;
@@ -368,6 +480,8 @@ function update(dt) {
 
   turret.angle = Math.atan2(mouse.y - center.y, mouse.x - center.x);
   tryShoot(dt);
+  updateRotatingShields(dt);
+  updateModProjectiles(dt);
 
   if (turret.maxShield > 0) turret.shield = Math.min(turret.maxShield, turret.shield + turret.shieldRegen * dt);
 
@@ -375,7 +489,6 @@ function update(dt) {
     turret.pulseTimer += dt;
     if (turret.pulseTimer >= turret.pulseEvery) {
       turret.pulseTimer = 0;
-      state.effects.push({ type: "ring", x: center.x, y: center.y, radius: 8, max: 170, life: 0.32, color: "#9cf2ff88" });
       blast(center.x, center.y, 170, 40 + turret.level * 2);
     }
   }
@@ -387,109 +500,70 @@ function update(dt) {
       spawnEnemy(type);
       state.enemyBudget -= type.cost;
       state.spawnTimer = state.spawnRate * rand(0.78, 1.18);
-    } else {
-      state.enemyBudget -= 1;
-    }
+    } else state.enemyBudget -= 1;
   }
 
-  if (state.enemyBudget <= 0 && state.enemies.filter((enemy) => !enemy.dead).length === 0) {
-    startNextWave();
-  }
+  if (state.enemyBudget <= 0 && state.enemies.filter((e) => !e.dead).length === 0) startNextWave();
 
   for (const bullet of state.bullets) {
     bullet.x += bullet.vx * dt;
     bullet.y += bullet.vy * dt;
-
-    if (bullet.x < -30 || bullet.x > canvas.width + 30 || bullet.y < -30 || bullet.y > canvas.height + 30) {
-      bullet.dead = true;
-      continue;
-    }
+    if (bullet.x < -30 || bullet.x > canvas.width + 30 || bullet.y < -30 || bullet.y > canvas.height + 30) { bullet.dead = true; continue; }
 
     for (const enemy of state.enemies) {
       if (enemy.dead) continue;
-      const d = Math.hypot(bullet.x - enemy.x, bullet.y - enemy.y);
-      if (d > enemy.type.radius + bullet.radius) continue;
+      if (Math.hypot(bullet.x - enemy.x, bullet.y - enemy.y) > enemy.type.radius + bullet.radius) continue;
+      if (enemy.type.dodge && Math.random() < enemy.type.dodge) { bullet.dead = true; break; }
 
-      if (enemy.type.dodge && Math.random() < enemy.type.dodge) {
-        bullet.dead = true;
-        break;
-      }
-
-      const crit = Math.random() < turret.critChance;
-      let dmg = bullet.damage * (crit ? turret.critMult : 1);
+      let dmg = bullet.damage * (Math.random() < turret.critChance ? turret.critMult : 1);
       if (enemy.hp / enemy.maxHp > 0.75) dmg *= 1 + turret.armorShred;
       enemy.hp -= dmg;
       enemy.hitFlash = 0.11;
+      pushEnemy(enemy, center.x, center.y, turret.bulletKnockback);
 
-      if (bullet.poison > 0) {
-        enemy.poison = Math.max(enemy.poison, bullet.poison);
-        enemy.poisonTimer = 2.8;
-      }
-      if (bullet.burn > 0) {
-        enemy.burn = Math.max(enemy.burn, bullet.burn);
-        enemy.burnTimer = 2.3;
-      }
-
-      if (turret.executeThreshold > 0 && enemy.hp > 0 && enemy.hp / enemy.maxHp < turret.executeThreshold) {
-        enemy.hp = 0;
-        state.effects.push({ type: "text", text: "EXECUTE", x: enemy.x, y: enemy.y - 20, color: "#ffd889", life: 0.35 });
-      }
-
+      if (bullet.poison > 0) { enemy.poison = Math.max(enemy.poison, bullet.poison); enemy.poisonTimer = turret.poisonDuration; }
+      if (bullet.burn > 0) { enemy.burn = Math.max(enemy.burn, bullet.burn); enemy.burnTimer = turret.burnDuration; }
+      if (turret.executeThreshold > 0 && enemy.hp > 0 && enemy.hp / enemy.maxHp < turret.executeThreshold) enemy.hp = 0;
       if (turret.lifesteal > 0) turret.hp = Math.min(turret.maxHp, turret.hp + dmg * turret.lifesteal);
 
       if (enemy.hp <= 0) onEnemyKilled(enemy);
       else if (turret.chainChance > 0 && Math.random() < turret.chainChance) chainLightning(enemy);
 
-      if (turret.ricochetChance > 0 && Math.random() < turret.ricochetChance) {
-        bullet.vx *= -1;
-        bullet.vy *= -1;
-        bullet.pierce = Math.max(bullet.pierce, 0);
-      } else {
-        bullet.pierce -= 1;
-        if (bullet.pierce < 0) {
-          bullet.dead = true;
-          break;
-        }
-      }
+      if (turret.ricochetChance > 0 && Math.random() < turret.ricochetChance) { bullet.vx *= -1; bullet.vy *= -1; bullet.pierce = Math.max(bullet.pierce, 0); }
+      else if (--bullet.pierce < 0) { bullet.dead = true; break; }
     }
   }
 
   for (const enemy of state.enemies) {
     if (enemy.dead) continue;
-
     const dx = center.x - enemy.x;
     const dy = center.y - enemy.y;
     const dist = Math.hypot(dx, dy) || 1;
+    enemy.x += (dx / dist) * enemy.speed * dt + enemy.kbX * dt;
+    enemy.y += (dy / dist) * enemy.speed * dt + enemy.kbY * dt;
+    enemy.kbX *= 0.82;
+    enemy.kbY *= 0.82;
 
-    enemy.x += (dx / dist) * enemy.speed * dt;
-    enemy.y += (dy / dist) * enemy.speed * dt;
+    if (enemy.poisonTimer > 0) { enemy.poisonTimer -= dt; enemy.hp -= enemy.poison * dt; }
+    if (enemy.burnTimer > 0) { enemy.burnTimer -= dt; enemy.hp -= enemy.burn * dt; }
 
-    if (enemy.poisonTimer > 0) {
-      enemy.poisonTimer -= dt;
-      enemy.hp -= enemy.poison * dt;
-      if (Math.random() < dt * 12) {
-        state.particles.push({ x: enemy.x + rand(-8, 8), y: enemy.y + rand(-8, 8), vx: rand(-20, 20), vy: rand(-30, 0), life: 0.22, color: "#57f267", radius: 2.2 });
-      }
-    }
-    if (enemy.burnTimer > 0) {
-      enemy.burnTimer -= dt;
-      enemy.hp -= enemy.burn * dt;
-      if (Math.random() < dt * 13) {
-        state.particles.push({ x: enemy.x + rand(-8, 8), y: enemy.y + rand(-8, 8), vx: rand(-18, 18), vy: rand(-45, -10), life: 0.19, color: "#ff9a43", radius: 2.4 });
-      }
-    }
+    const coreDist = Math.hypot(enemy.x - center.x, enemy.y - center.y);
+    const minDist = CORE_COLLISION_RADIUS + enemy.type.radius;
+    if (coreDist < minDist) {
+      const nx = (enemy.x - center.x) / (coreDist || 1);
+      const ny = (enemy.y - center.y) / (coreDist || 1);
+      const pushOut = minDist - coreDist;
+      enemy.x += nx * pushOut;
+      enemy.y += ny * pushOut;
+      enemy.kbX += nx * 30;
+      enemy.kbY += ny * 30;
+      enemy.contactTimer += dt;
+      if (enemy.contactTimer >= 0.08) { dealTurretDamage(enemy.type.touch * 0.5); enemy.contactTimer = 0; }
+      if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 4) enemy.hp -= turret.bulletDamage * 0.85;
+      if (enemy.type.id === "bomber") enemy.hp = -1;
+    } else enemy.contactTimer = 0;
 
     enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
-
-    if (dist < enemy.type.radius + 26) {
-      dealTurretDamage(enemy.type.touch * dt * 2.45);
-      if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 3.5) {
-        enemy.hp -= turret.bulletDamage * 0.8;
-        state.effects.push({ type: "bolt", x1: center.x, y1: center.y, x2: enemy.x, y2: enemy.y, life: 0.07 });
-      }
-      if (enemy.type.id === "bomber") enemy.hp = -1;
-    }
-
     if (enemy.hp <= 0) onEnemyKilled(enemy);
   }
 
@@ -497,64 +571,20 @@ function update(dt) {
     const a = state.time * 1.85 + (Math.PI * 2 * i) / turret.orbitals;
     const ox = center.x + Math.cos(a) * 88;
     const oy = center.y + Math.sin(a) * 88;
-    const target = state.enemies
-      .filter((enemy) => !enemy.dead)
-      .map((enemy) => ({ enemy, d: Math.hypot(enemy.x - ox, enemy.y - oy) }))
-      .sort((aItem, bItem) => aItem.d - bItem.d)[0];
-
-    if (target && target.d < 190 && Math.random() < dt * 6.2) {
-      const aim = Math.atan2(target.enemy.y - oy, target.enemy.x - ox);
-      fireBullet(aim, 0.52, 0.9, 3);
-      state.effects.push({ type: "muzzle", x: ox, y: oy, life: 0.06 });
+    const t = state.enemies.filter((e) => !e.dead).map((e) => ({ e, d: Math.hypot(e.x - ox, e.y - oy) })).sort((a1, b1) => a1.d - b1.d)[0];
+    if (t && t.d < turret.orbitalRange && Math.random() < dt * turret.orbitalFireRate) {
+      fireBullet(Math.atan2(t.e.y - oy, t.e.x - ox), turret.orbitalDamageMult, 0.9, 3, turret.orbitalPierceBonus);
     }
   }
 
-  for (const p of state.particles) {
-    p.life -= dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.vx *= 0.96;
-    p.vy *= 0.96;
-  }
+  callHooks("onUpdate", { dt });
 
-  for (const fx of state.effects) {
-    fx.life -= dt;
-    if (fx.type === "ring") fx.radius += (fx.max - fx.radius) * 0.3;
-    if (fx.type === "text") fx.y -= dt * 32;
-  }
-
-  state.bullets = state.bullets.filter((bullet) => !bullet.dead);
-  state.enemies = state.enemies.filter((enemy) => enemy.hp > 0 && !enemy.dead);
-  state.particles = state.particles.filter((particle) => particle.life > 0);
-  state.effects = state.effects.filter((effect) => effect.life > 0);
-
+  state.bullets = state.bullets.filter((b) => !b.dead);
+  state.enemies = state.enemies.filter((e) => e.hp > 0 && !e.dead);
   ui.wave.textContent = `Wave ${state.wave}`;
   ui.hp.textContent = `HP: ${Math.ceil(turret.hp)} / ${Math.ceil(turret.maxHp)}`;
   ui.shield.textContent = `Shield: ${Math.ceil(turret.shield)}${turret.maxShield ? ` / ${Math.ceil(turret.maxShield)}` : ""}`;
   ui.xp.textContent = `XP: ${Math.floor(turret.xp)} / ${turret.xpToLevel}`;
-}
-
-function drawBackground() {
-  ctx.save();
-  ctx.fillStyle = "#0b1327";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  const grid = 38;
-  ctx.strokeStyle = "#65deff14";
-  ctx.lineWidth = 1;
-  for (let x = 0; x < canvas.width; x += grid) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, canvas.height);
-    ctx.stroke();
-  }
-  for (let y = 0; y < canvas.height; y += grid) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-  }
-  ctx.restore();
 }
 
 function draw() {
@@ -562,66 +592,33 @@ function draw() {
   const shakeY = rand(-state.shake, state.shake);
   ctx.save();
   ctx.translate(shakeX, shakeY);
+  ctx.fillStyle = "#0b1327";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  drawBackground();
-
-  for (const fx of state.effects) {
-    if (fx.type === "ring") {
-      ctx.strokeStyle = fx.color || "#97eeff88";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(fx.x, fx.y, fx.radius, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (fx.type === "bolt") {
-      ctx.strokeStyle = "#b4e7ff";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(fx.x1, fx.y1);
-      ctx.lineTo(fx.x2, fx.y2);
-      ctx.stroke();
-    } else if (fx.type === "muzzle") {
-      ctx.fillStyle = "#e0fdff";
-      ctx.beginPath();
-      ctx.arc(fx.x, fx.y, 5, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (fx.type === "text") {
-      ctx.fillStyle = fx.color;
-      ctx.font = "bold 14px Inter, sans-serif";
-      ctx.fillText(fx.text, fx.x, fx.y);
-    }
+  for (const e of state.enemies) {
+    if (e.poisonTimer > 0) { ctx.fillStyle = "#57f26733"; ctx.beginPath(); ctx.arc(e.x, e.y, e.type.radius + 5, 0, Math.PI * 2); ctx.fill(); }
+    if (e.burnTimer > 0) { ctx.fillStyle = "#ff9a432b"; ctx.beginPath(); ctx.arc(e.x, e.y, e.type.radius + 7, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = e.hitFlash ? "#fff" : e.type.color;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.type.radius + (e.elite ? 2 : 0), 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  for (const bullet of state.bullets) {
+  for (const b of state.bullets) {
     ctx.fillStyle = "#abf7ff";
     ctx.beginPath();
-    ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  for (const enemy of state.enemies) {
-    if (enemy.poisonTimer > 0) {
-      ctx.fillStyle = "#57f26733";
+  for (const p of state.modProjectiles) {
+    if (p.draw) p.draw(p, ctx, ModAPI.getContext());
+    else {
+      ctx.fillStyle = p.color || "#f7c8ff";
       ctx.beginPath();
-      ctx.arc(enemy.x, enemy.y, enemy.type.radius + 5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, p.radius || 4, 0, Math.PI * 2);
       ctx.fill();
     }
-    if (enemy.burnTimer > 0) {
-      ctx.fillStyle = "#ff9a432b";
-      ctx.beginPath();
-      ctx.arc(enemy.x, enemy.y, enemy.type.radius + 7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.fillStyle = enemy.hitFlash ? "#ffffff" : enemy.type.color;
-    ctx.beginPath();
-    ctx.arc(enemy.x, enemy.y, enemy.type.radius + (enemy.elite ? 2 : 0), 0, Math.PI * 2);
-    ctx.fill();
-
-    const hpW = enemy.type.radius * 1.9;
-    ctx.fillStyle = "#0008";
-    ctx.fillRect(enemy.x - hpW / 2, enemy.y - enemy.type.radius - 11, hpW, 4);
-    ctx.fillStyle = "#78ff8f";
-    ctx.fillRect(enemy.x - hpW / 2, enemy.y - enemy.type.radius - 11, hpW * clamp(enemy.hp / enemy.maxHp, 0, 1), 4);
   }
 
   for (let i = 0; i < turret.orbitals; i++) {
@@ -634,12 +631,21 @@ function draw() {
     ctx.fill();
   }
 
-  const shieldRadius = 27 + (turret.maxShield > 0 ? 12 * (turret.shield / Math.max(1, turret.maxShield)) : 0);
+  for (let i = 0; i < turret.rotatingShields; i++) {
+    const a = state.time * turret.rotatingShieldSpeed + (Math.PI * 2 * i) / turret.rotatingShields;
+    const x = center.x + Math.cos(a) * turret.rotatingShieldRadius;
+    const y = center.y + Math.sin(a) * turret.rotatingShieldRadius;
+    ctx.fillStyle = "#8fd8ff";
+    ctx.beginPath();
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   if (turret.shield > 0.1) {
     ctx.strokeStyle = "#69d7ff99";
     ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.arc(center.x, center.y, shieldRadius, 0, Math.PI * 2);
+    ctx.arc(center.x, center.y, 27 + 12 * (turret.shield / Math.max(1, turret.maxShield)), 0, Math.PI * 2);
     ctx.stroke();
   }
 
@@ -652,15 +658,21 @@ function draw() {
   ctx.fillRect(10, -6, 30, 12);
   ctx.restore();
 
-  for (const p of state.particles) {
-    ctx.globalAlpha = clamp(p.life * 3, 0, 1);
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-    ctx.fill();
+  for (const fx of state.effects) {
+    if (fx.type === "ring") {
+      fx.life -= 1 / 60;
+      fx.radius += (fx.max - fx.radius) * 0.3;
+      ctx.strokeStyle = fx.color || "#97eeff88";
+      ctx.beginPath();
+      ctx.arc(fx.x, fx.y, fx.radius, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (state.modEffectDrawers[fx.type]) {
+      state.modEffectDrawers[fx.type](fx, ctx, ModAPI.getContext());
+    }
   }
+  state.effects = state.effects.filter((fx) => fx.life === undefined || fx.life > 0);
 
-  ctx.globalAlpha = 1;
+  callHooks("onDraw", { ctx });
   ctx.restore();
 }
 
@@ -678,15 +690,10 @@ canvas.addEventListener("mousemove", (event) => {
   mouse.x = ((event.clientX - rect.left) / rect.width) * canvas.width;
   mouse.y = ((event.clientY - rect.top) / rect.height) * canvas.height;
 });
-
-canvas.addEventListener("mousedown", () => {
-  mouse.down = true;
-});
-window.addEventListener("mouseup", () => {
-  mouse.down = false;
-});
+canvas.addEventListener("mousedown", () => (mouse.down = true));
+window.addEventListener("mouseup", () => (mouse.down = false));
 window.addEventListener("keydown", (event) => keys.add(event.key.toLowerCase()));
 window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
 
 refreshUpgradeList();
-requestAnimationFrame(loop);
+loadMods().finally(() => requestAnimationFrame(loop));
