@@ -156,7 +156,6 @@ const ModAPI = {
     state.modEnemyById.set(normalized.id, normalized);
   },
   registerWeapon = function(def){
-    if (!def.fire) throw new Error("Weapon must fire.")
     modWeapons.push(def);
   },
   registerEnemyAI = function(id, updateFn){
