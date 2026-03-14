@@ -6,17 +6,18 @@ const ui = {
   hp: document.getElementById("hpLabel"),
   shield: document.getElementById("shieldLabel"),
   xp: document.getElementById("xpLabel"),
+  boss: document.getElementById("bossLabel"),
   overlay: document.getElementById("overlay"),
   title: document.getElementById("overlayTitle"),
   subtitle: document.getElementById("overlaySubtitle"),
   choices: document.getElementById("choices"),
   upgradeList: document.getElementById("upgradeList"),
   modPanels: document.getElementById("modPanels"),
+  statsRow: document.querySelector(".stats"),
 };
 
 const center = { x: canvas.width / 2, y: canvas.height / 2 };
-const TURRET_RADIUS = 24;
-const CORE_COLLISION_RADIUS = 34;
+const CORE_RADIUS = 34;
 const keys = new Set();
 const mouse = { x: center.x, y: center.y, down: false };
 
@@ -25,74 +26,77 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 const state = {
   time: 0,
+  wave: 1,
   gameOver: false,
   pausedForUpgrade: false,
-  wave: 1,
-  enemyBudget: 28,
-  spawnTimer: 0,
-  spawnRate: 0.76,
+  score: 0,
+  shake: 0,
   bullets: [],
   enemies: [],
   particles: [],
   effects: [],
   modProjectiles: [],
-  score: 0,
-  shake: 0,
   activeUpgrades: [],
+  bossAlive: null,
+  upgradePickCount: 3,
+  waveTable: [],
+  waveTuning: { budgetScale: 1, spawnRateScale: 1, hpScale: 1, speedScale: 1 },
+  waveQueue: { budget: 0, spawnRate: 0.8, timer: 0, weights: {}, bossId: null },
   modHooks: {
-    onInit: [],
-    onUpdate: [],
-    onDraw: [],
-    onEnemyKilled: [],
-    onEnemySpawn: [],
-    onUpgradeAwarded: [],
-    onWaveStart: [],
-    onShoot: [],
+    onInit: [], onUpdate: [], onDraw: [], onEnemySpawn: [], onEnemyKilled: [], onBossSpawn: [], onBossKilled: [],
+    onUpgradeAwarded: [], onPreUpgradeChoices: [], onWaveStart: [], onShoot: [], onBulletHit: [], onTurretDamaged: [], onGameOver: [],
   },
   modEffectDrawers: {},
+  modProjectileTypes: new Map(),
+  modWaveBuilders: [],
+  modUpgradeFilters: [],
+  modHudStats: new Map(),
+  modKeybinds: new Map(),
   modEnemyById: new Map(),
+  modBossById: new Map(),
+  modAiById: new Map(),
 };
 
 const turret = {
   angle: 0,
-  hp: 100,
-  maxHp: 100,
+  hp: 120,
+  maxHp: 120,
   shield: 0,
   maxShield: 0,
   shieldRegen: 0,
+  regen: 0,
   fireRate: 4,
+  shootCd: 0,
   bulletSpeed: 520,
   bulletDamage: 18,
   bulletSize: 4,
-  bulletKnockback: 90,
+  bulletKnockback: 100,
   spread: 0,
   multiShot: 1,
   pierce: 0,
   critChance: 0.08,
   critMult: 2,
-  burn: 0,
   poison: 0,
   poisonDuration: 2.8,
+  burn: 0,
   burnDuration: 2.3,
   lifesteal: 0,
+  dodgeChance: 0,
+  armorShred: 0,
+  executeThreshold: 0,
+  ricochetChance: 0,
   chainChance: 0,
   chainRange: 130,
   chainDamageFactor: 0.55,
   shieldOnKill: 0,
-  vampBurst: 0,
-  pulseEvery: 0,
-  pulseTimer: 0,
+  shockTouch: 0,
   overdrive: 0,
   overdriveTimer: 0,
-  executeThreshold: 0,
-  armorShred: 0,
-  ricochetChance: 0,
-  dodgeChance: 0,
-  regen: 0,
-  shockTouch: 0,
+  pulseEvery: 0,
+  pulseTimer: 0,
   orbitals: 0,
-  orbitalFireRate: 6.2,
-  orbitalDamageMult: 0.52,
+  orbitalFireRate: 6,
+  orbitalDamageMult: 0.5,
   orbitalPierceBonus: 0,
   orbitalRange: 190,
   rotatingShields: 0,
@@ -100,115 +104,240 @@ const turret = {
   rotatingShieldSpeed: 1.8,
   rotatingShieldDamage: 22,
   rotatingShieldKnockback: 250,
-  shootCd: 0,
   level: 1,
   xp: 0,
   xpToLevel: 100,
 };
 
 const enemyTypes = [
-  { id: "runner", color: "#ff6a8f", radius: 12, hp: 34, speed: 95, touch: 11, xp: 11, cost: 6 },
-  { id: "tank", color: "#ffd166", radius: 18, hp: 120, speed: 42, touch: 18, xp: 28, cost: 13 },
-  { id: "splitter", color: "#8bff95", radius: 14, hp: 56, speed: 67, touch: 13, xp: 18, splitOnDeath: true, cost: 9 },
-  { id: "leech", color: "#9f8cff", radius: 11, hp: 46, speed: 78, touch: 10, xp: 16, dodge: 0.18, cost: 10 },
-  { id: "bomber", color: "#ff9a3d", radius: 15, hp: 76, speed: 55, touch: 10, xp: 20, explodeRange: 75, explodeDamage: 22, cost: 12 },
+  { id: "runner", color: "#ff6a8f", radius: 12, hp: 32, speed: 95, touch: 10, xp: 10, cost: 6, ai: "chaser", weight: 40 },
+  { id: "tank", color: "#ffd166", radius: 18, hp: 115, speed: 44, touch: 16, xp: 24, cost: 12, ai: "chaser", weight: 22 },
+  { id: "splitter", color: "#8bff95", radius: 14, hp: 54, speed: 70, touch: 11, xp: 16, cost: 8, ai: "chaser", splitOnDeath: true, weight: 20 },
+  { id: "leech", color: "#9f8cff", radius: 11, hp: 44, speed: 82, touch: 9, xp: 15, cost: 9, ai: "strafer", dodge: 0.16, weight: 12 },
+  { id: "bomber", color: "#ff9a3d", radius: 15, hp: 74, speed: 58, touch: 10, xp: 20, cost: 11, ai: "charger", explodeRange: 75, explodeDamage: 22, weight: 6 },
 ];
+
+const bossTypes = [
+  { id: "iron_colossus", name: "Iron Colossus", color: "#ff6767", radius: 34, hp: 1100, speed: 38, touch: 26, xp: 220, ai: "juggernaut", knockbackResist: 0.75 },
+  { id: "arc_lord", name: "Arc Lord", color: "#76b6ff", radius: 28, hp: 900, speed: 58, touch: 20, xp: 260, ai: "orbiter_boss", knockbackResist: 0.65 },
+];
+
+const aiHandlers = {
+  chaser(enemy, dt) {
+    const dx = center.x - enemy.x;
+    const dy = center.y - enemy.y;
+    const d = Math.hypot(dx, dy) || 1;
+    enemy.vx += (dx / d) * enemy.speed * dt;
+    enemy.vy += (dy / d) * enemy.speed * dt;
+  },
+  strafer(enemy, dt) {
+    const dx = center.x - enemy.x;
+    const dy = center.y - enemy.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const px = -dy / d;
+    const py = dx / d;
+    enemy.vx += (dx / d) * enemy.speed * dt * 0.75 + px * enemy.speed * dt * 0.48;
+    enemy.vy += (dy / d) * enemy.speed * dt * 0.75 + py * enemy.speed * dt * 0.48;
+  },
+  charger(enemy, dt) {
+    enemy.aiTimer = (enemy.aiTimer || 0) - dt;
+    if (enemy.aiTimer <= 0) {
+      const a = Math.atan2(center.y - enemy.y, center.x - enemy.x);
+      enemy.vx += Math.cos(a) * enemy.speed * 6;
+      enemy.vy += Math.sin(a) * enemy.speed * 6;
+      enemy.aiTimer = rand(1.2, 2.4);
+    }
+    aiHandlers.chaser(enemy, dt * 0.25);
+  },
+  juggernaut(enemy, dt) {
+    aiHandlers.chaser(enemy, dt * 0.8);
+    enemy.aiTimer = (enemy.aiTimer || 0) + dt;
+    if (enemy.aiTimer > 2.2) {
+      enemy.aiTimer = 0;
+      blast(enemy.x, enemy.y, 120, 24, true);
+    }
+  },
+  orbiter_boss(enemy, dt) {
+    enemy.aiAngle = (enemy.aiAngle || 0) + dt * 1.1;
+    const tx = center.x + Math.cos(enemy.aiAngle) * 160;
+    const ty = center.y + Math.sin(enemy.aiAngle) * 160;
+    const dx = tx - enemy.x;
+    const dy = ty - enemy.y;
+    const d = Math.hypot(dx, dy) || 1;
+    enemy.vx += (dx / d) * enemy.speed * dt * 1.2;
+    enemy.vy += (dy / d) * enemy.speed * dt * 1.2;
+  },
+};
 
 const upgrades = [
-  { name: "Ablative Shield", desc: "+35 max shield, +2 shield regen", apply: () => { turret.maxShield += 35; turret.shield = Math.min(turret.maxShield, turret.shield + 35); turret.shieldRegen += 2; } },
-  { name: "Venom Rounds", desc: "Bullets apply +8 poison DoT", apply: () => (turret.poison += 8) },
-  { name: "Lifesteal Core", desc: "Heal 8% of bullet damage dealt", apply: () => (turret.lifesteal += 0.08) },
-  { name: "Overclock", desc: "+25% fire rate", apply: () => (turret.fireRate *= 1.25) },
-  { name: "Piercing Slugs", desc: "+1 bullet pierce", apply: () => (turret.pierce += 1) },
-  { name: "Scatter Array", desc: "+1 projectile per shot", apply: () => (turret.multiShot += 1) },
-  { name: "Corrosive Fire", desc: "Bullets ignite for +10 burn DoT", apply: () => (turret.burn += 10) },
-  { name: "Chain Arc", desc: "+16% chain lightning proc chance", apply: () => (turret.chainChance += 0.16) },
-  { name: "Blood Battery", desc: "Gain 6 shield on kill (+10 max)", apply: () => { turret.shieldOnKill += 6; turret.maxShield += 10; } },
-  { name: "Orbital Drones", desc: "Spawn an orbiting drone blaster", apply: () => (turret.orbitals += 1), tree: "Orbitals" },
-  { name: "Orbital Accelerator", desc: "Orbitals fire 24% faster", apply: () => (turret.orbitalFireRate *= 1.24), tree: "Orbitals", requires: ["Orbital Drones"] },
-  { name: "Orbital Rail Mod", desc: "Orbitals deal +22% damage", apply: () => (turret.orbitalDamageMult *= 1.22), tree: "Orbitals", requires: ["Orbital Drones"] },
-  { name: "Orbital Piercer", desc: "Orbitals gain +1 pierce", apply: () => (turret.orbitalPierceBonus += 1), tree: "Orbitals", requires: ["Orbital Drones"] },
-  { name: "Sonic Pulse", desc: "Emit AoE every 7s (stack = faster)", apply: () => { turret.pulseEvery = Math.max(2.8, turret.pulseEvery ? turret.pulseEvery - 0.8 : 7); turret.pulseTimer = 0; } },
-  { name: "Rotating Shield Node", desc: "Gain an always-on rotating shield", apply: () => (turret.rotatingShields += 1), tree: "Shield Grid" },
-  { name: "Shield Gyros", desc: "Rotating shields spin faster/hit harder", apply: () => { turret.rotatingShieldSpeed += 0.4; turret.rotatingShieldDamage += 8; }, tree: "Shield Grid", requires: ["Rotating Shield Node"] },
-  { name: "Shield Radius Array", desc: "Rotating shields orbit farther out", apply: () => (turret.rotatingShieldRadius += 10), tree: "Shield Grid", requires: ["Rotating Shield Node"] },
+  { name: "Ablative Shield", rarity: "common", desc: "+35 max shield, +2 shield regen", apply: () => { turret.maxShield += 35; turret.shield = Math.min(turret.maxShield, turret.shield + 35); turret.shieldRegen += 2; } },
+  { name: "Venom Rounds", rarity: "common", desc: "+8 poison DoT", apply: () => (turret.poison += 8) },
+  { name: "Lifesteal Core", rarity: "uncommon", desc: "Heal 8% of bullet dmg", apply: () => (turret.lifesteal += 0.08) },
+  { name: "Overclock", rarity: "common", desc: "+25% fire rate", apply: () => (turret.fireRate *= 1.25) },
+  { name: "Piercing Slugs", rarity: "uncommon", desc: "+1 pierce", apply: () => (turret.pierce += 1) },
+  { name: "Scatter Array", rarity: "uncommon", desc: "+1 projectile", apply: () => (turret.multiShot += 1) },
+  { name: "Corrosive Fire", rarity: "rare", desc: "+10 burn DoT", apply: () => (turret.burn += 10) },
+  { name: "Chain Arc", rarity: "rare", desc: "+16% chain chance", apply: () => (turret.chainChance += 0.16) },
+  { name: "Blood Battery", rarity: "common", desc: "+6 shield on kill", apply: () => (turret.shieldOnKill += 6) },
+  { name: "Strategist", rarity: "epic", desc: "+1 upgrade pick each level", apply: () => (state.upgradePickCount += 1) },
+  { name: "Orbital Drones", rarity: "rare", desc: "+1 orbital", apply: () => (turret.orbitals += 1), tree: "Orbitals" },
+  { name: "Orbital Accelerator", rarity: "epic", desc: "Orbitals fire faster", apply: () => (turret.orbitalFireRate *= 1.24), tree: "Orbitals", requires: ["Orbital Drones"] },
+  { name: "Orbital Rail Mod", rarity: "epic", desc: "Orbitals hit harder", apply: () => (turret.orbitalDamageMult *= 1.22), tree: "Orbitals", requires: ["Orbital Drones"] },
+  { name: "Orbital Piercer", rarity: "epic", desc: "Orbitals +1 pierce", apply: () => (turret.orbitalPierceBonus += 1), tree: "Orbitals", requires: ["Orbital Drones"] },
+  { name: "Sonic Pulse", rarity: "rare", desc: "AoE pulse every 7s", apply: () => { turret.pulseEvery = Math.max(2.8, turret.pulseEvery ? turret.pulseEvery - 0.8 : 7); turret.pulseTimer = 0; } },
+  { name: "Rotating Shield Node", rarity: "rare", desc: "+1 rotating shield", apply: () => (turret.rotatingShields += 1), tree: "Shield Grid" },
 ];
 
-const modWeapons = [];
-const enemyAIs = {};
-
-enemyAIs["chase"] = function(enemy, dt, ctx) {
-  const {center} = ctx;
-
-  const dx = center.x - enemy.x;
-  const dy = center.y - enemy.y;
-  const dist = Math.hypot(dx, dy) || 1;
-
-  enemy.x += (dx / dist) * enemy.speed * dt + enemy.kbX * dt;
-  enemy.y += (dy / dist) * enemy.speed * dt + enemy.kbY * dt;
+const upgradeRarities = {
+  common: { label: "Common", color: "#8db5d8", border: "#8db5d855", glow: "#9ed2ff44" },
+  uncommon: { label: "Uncommon", color: "#82e38c", border: "#82e38c66", glow: "#7fff9955" },
+  rare: { label: "Rare", color: "#69b7ff", border: "#69b7ff77", glow: "#69b7ff66" },
+  epic: { label: "Epic", color: "#cb8dff", border: "#cb8dff88", glow: "#cb8dff77" },
+  legendary: { label: "Legendary", color: "#ffb55f", border: "#ffb55faa", glow: "#ffb55f88" },
 };
+
+const rarityWeightsByWave = [
+  { minWave: 1, weights: { common: 68, uncommon: 24, rare: 7, epic: 1, legendary: 0 } },
+  { minWave: 6, weights: { common: 52, uncommon: 29, rare: 14, epic: 4, legendary: 1 } },
+  { minWave: 12, weights: { common: 37, uncommon: 30, rare: 20, epic: 10, legendary: 3 } },
+  { minWave: 20, weights: { common: 26, uncommon: 29, rare: 24, epic: 15, legendary: 6 } },
+];
+
+function buildBaseWaveTable(count = 40) {
+  const table = [];
+  for (let wave = 1; wave <= count; wave++) {
+    const easyRamp = wave <= 8 ? 0.78 + wave * 0.06 : 1 + (wave - 8) * 0.04;
+    table.push({
+      wave,
+      budget: Math.floor((20 + wave * 9 + Math.pow(wave, 1.22) * 2.1) * easyRamp),
+      spawnRate: clamp(0.95 - wave * 0.018, 0.14, 1.2),
+      xpReward: 24 + wave * 7,
+      bossId: wave % 5 === 0 ? bossTypes[(wave / 5 - 1) % bossTypes.length].id : null,
+      weights: {
+        runner: clamp(42 - wave, 16, 42),
+        splitter: clamp(24 + wave * 0.3, 18, 34),
+        tank: clamp(18 + wave * 0.4, 18, 34),
+        leech: clamp(8 + wave * 0.55, 8, 28),
+        bomber: clamp(5 + wave * 0.5, 5, 24),
+      },
+    });
+  }
+  return table;
+}
+state.waveTable = buildBaseWaveTable(60);
+
+function ensureHudStat(id, label) {
+  if (state.modHudStats.has(id)) return state.modHudStats.get(id);
+  const span = document.createElement("span");
+  span.id = `mod-stat-${id}`;
+  span.textContent = `${label}: --`;
+  ui.statsRow.appendChild(span);
+  const stat = { id, label, span, value: "--", format: (v) => `${v}` };
+  state.modHudStats.set(id, stat);
+  return stat;
+}
+
+function refreshHudStats() {
+  for (const stat of state.modHudStats.values()) stat.span.textContent = `${stat.label}: ${stat.value}`;
+}
+
+function callHooks(type, payload = {}) {
+  for (const hook of state.modHooks[type] || []) {
+    try { hook(payload, ModAPI.getContext()); } catch (err) { console.error(`[mod hook:${type}]`, err); }
+  }
+}
 
 const ModAPI = {
   registerEnemy(def) {
     if (!def?.id) throw new Error("Enemy must have id");
-    const normalized = { cost: 10, xp: 20, radius: 12, speed: 60, touch: 12, color: "#ffffff", hp: 60, ...def };
+    const normalized = { cost: 10, xp: 20, radius: 12, speed: 60, touch: 12, color: "#fff", hp: 60, ai: "chaser", weight: 10, ...def };
     enemyTypes.push(normalized);
     state.modEnemyById.set(normalized.id, normalized);
   },
-  registerWeapon = function(def){
-    modWeapons.push(def);
+  registerBoss(def) {
+    if (!def?.id || !def?.name) throw new Error("Boss requires id + name");
+    const normalized = { radius: 30, hp: 900, speed: 50, touch: 22, xp: 260, ai: "juggernaut", color: "#ff6b6b", knockbackResist: 0.7, ...def };
+    bossTypes.push(normalized);
+    state.modBossById.set(normalized.id, normalized);
   },
-  registerEnemyAI = function(id, updateFn){
-    enemyAIs[id] = updateFn;
+  registerAI(id, fn) {
+    if (!id || typeof fn !== "function") throw new Error("AI requires id + function");
+    state.modAiById.set(id, fn);
   },
+  registerWaveTable(table) {
+    if (!Array.isArray(table) || !table.length) throw new Error("Wave table must be non-empty array");
+    state.waveTable = table.map((e, i) => ({ wave: i + 1, budget: 30, spawnRate: 0.8, xpReward: 32, weights: {}, bossId: null, ...e }));
+  },
+  setWaveEntry(wave, entry) {
+    const idx = Math.max(0, wave - 1);
+    state.waveTable[idx] = { wave, budget: 30, spawnRate: 0.8, xpReward: 32, weights: {}, bossId: null, ...(state.waveTable[idx] || {}), ...entry };
+  },
+  setGlobalWaveTuning(partial) {
+    state.waveTuning = { ...state.waveTuning, ...partial };
+  },
+  registerWaveBuilder(builderFn) { state.modWaveBuilders.push(builderFn); },
+  registerUpgradeFilter(filterFn) { state.modUpgradeFilters.push(filterFn); },
   registerUpgrade(def) {
     if (!def?.name || typeof def.apply !== "function") throw new Error("Upgrade requires name + apply");
-    upgrades.push(def);
+    upgrades.push({ rarity: "common", ...def });
   },
+  registerRarity(id, def) {
+    if (!id) throw new Error("Rarity id required");
+    upgradeRarities[id] = { label: id, color: "#fff", border: "#ffffff66", glow: "#ffffff44", ...def };
+  },
+  setUpgradeRarity(upgradeName, rarity) {
+    const found = upgrades.find((u) => u.name === upgradeName);
+    if (found) found.rarity = rarity;
+  },
+  setRarityWeightsTable(table) {
+    if (!Array.isArray(table) || !table.length) throw new Error("Rarity weight table must be non-empty");
+    rarityWeightsByWave.length = 0;
+    for (const entry of table) rarityWeightsByWave.push(entry);
+  },
+  setUpgradePickCount(n) { state.upgradePickCount = Math.max(1, Math.floor(n)); },
+  registerProjectileType(type, factory) { state.modProjectileTypes.set(type, factory); },
+  spawnProjectileType(type, payload = {}) {
+    const factory = state.modProjectileTypes.get(type);
+    if (!factory) throw new Error(`Unknown projectile type: ${type}`);
+    const created = factory(payload, ModAPI.getContext());
+    if (Array.isArray(created)) created.forEach((p) => ModAPI.spawnProjectile(p));
+    else if (created) ModAPI.spawnProjectile(created);
+  },
+  spawnProjectile(def) { state.modProjectiles.push({ life: 2, radius: 4, ...def }); },
+  registerEffectType(type, draw) { state.modEffectDrawers[type] = draw; },
+  addEffect(effect) { state.effects.push(effect); },
   registerHook(type, fn) {
     if (!state.modHooks[type]) throw new Error(`Unknown hook ${type}`);
     state.modHooks[type].push(fn);
   },
-  registerEffectType(type, draw) {
-    state.modEffectDrawers[type] = draw;
+  registerHudStat(id, config = {}) {
+    const stat = ensureHudStat(id, config.label || id);
+    if (config.format) stat.format = config.format;
+    return { set(value) { stat.value = stat.format(value); } };
   },
-  spawnEnemy(typeOrId, overrides = {}) {
-    const base = typeof typeOrId === "string" ? state.modEnemyById.get(typeOrId) || enemyTypes.find((e) => e.id === typeOrId) : typeOrId;
-    if (base) spawnEnemy(base, false, overrides);
-  },
-  spawnProjectile(projectileDef) {
-    state.modProjectiles.push({ life: 2, radius: 4, ...projectileDef });
-  },
+  registerKeybind(actionId, key, handler) { state.modKeybinds.set(actionId, { key: key.toLowerCase(), handler }); },
+  createFloatingText(text, x, y, color = "#fff") { state.effects.push({ type: "text", text, x, y, color, life: 0.5 }); },
   addPanel(id, title, renderText = "") {
     const box = document.createElement("div");
     box.className = "mod-panel";
     box.id = `mod-panel-${id}`;
     box.innerHTML = `<h3>${title}</h3><div>${renderText}</div>`;
     ui.modPanels.appendChild(box);
-    return {
-      setHtml(html) {
-        box.querySelector("div").innerHTML = html;
-      },
-    };
+    return { setHtml(html) { box.querySelector("div").innerHTML = html; } };
   },
-  addEffect(effect) {
-    state.effects.push(effect);
+  spawnEnemy(typeOrId, overrides = {}) {
+    const base = typeof typeOrId === "string" ? state.modEnemyById.get(typeOrId) || enemyTypes.find((e) => e.id === typeOrId) : typeOrId;
+    if (base) spawnEnemy(base, false, overrides);
+  },
+  spawnBoss(id, overrides = {}) {
+    const boss = state.modBossById.get(id) || bossTypes.find((b) => b.id === id);
+    if (boss) spawnBoss(boss, overrides);
   },
   getContext() {
-    return { state, turret, center, canvas, ctx, rand, clamp };
+    return { state, turret, center, canvas, ctx, rand, clamp, enemyTypes, bossTypes, upgrades };
   },
 };
 window.TurretGameModAPI = ModAPI;
-
-function callHooks(type, payload = {}) {
-  for (const hook of state.modHooks[type]) {
-    try {
-      hook(payload, ModAPI.getContext());
-    } catch (err) {
-      console.error(`[mod hook:${type}]`, err);
-    }
-  }
-}
 
 async function loadMods() {
   try {
@@ -224,7 +353,7 @@ async function loadMods() {
     }
     callHooks("onInit", {});
   } catch {
-    // no mods installed, continue silently
+    // optional mods
   }
 }
 
@@ -234,15 +363,26 @@ function refreshUpgradeList() {
     ui.upgradeList.innerHTML = "<li>None yet — level up to choose boosts.</li>";
     return;
   }
-  state.activeUpgrades.slice(-14).forEach((u) => {
+  state.activeUpgrades.slice(-16).forEach((u) => {
     const li = document.createElement("li");
     li.textContent = `${u.name}${u.stacks > 1 ? ` x${u.stacks}` : ""}`;
     ui.upgradeList.appendChild(li);
   });
 }
 
+function weightedEnemy(weights = {}) {
+  const pool = enemyTypes.map((e) => ({ e, w: weights[e.id] ?? e.weight ?? 1 })).filter((x) => x.w > 0);
+  const sum = pool.reduce((a, b) => a + b.w, 0) || 1;
+  let r = Math.random() * sum;
+  for (const item of pool) {
+    r -= item.w;
+    if (r <= 0) return item.e;
+  }
+  return pool[0]?.e || enemyTypes[0];
+}
+
 function enemyAtEdge() {
-  const p = 30;
+  const p = 28;
   const s = Math.floor(rand(0, 4));
   if (s === 0) return { x: rand(-p, canvas.width + p), y: -p };
   if (s === 1) return { x: canvas.width + p, y: rand(-p, canvas.height + p) };
@@ -250,37 +390,30 @@ function enemyAtEdge() {
   return { x: -p, y: rand(-p, canvas.height + p) };
 }
 
-function pickEnemyType() {
-  const w = state.wave;
-  const r = Math.random();
-  if (w < 3) return r < 0.76 ? enemyTypes[0] : enemyTypes[2];
-  if (w < 6) return r < 0.5 ? enemyTypes[0] : r < 0.8 ? enemyTypes[2] : enemyTypes[1];
-  if (w < 10) return r < 0.33 ? enemyTypes[0] : r < 0.56 ? enemyTypes[2] : r < 0.82 ? enemyTypes[1] : enemyTypes[3];
-  return enemyTypes[Math.floor(rand(0, enemyTypes.length))];
-}
-
-function spawnEnemy(type = pickEnemyType(), elite = false, overrides = {}) {
+function spawnEnemy(type = weightedEnemy(state.waveQueue.weights), elite = false, overrides = {}) {
   const p = enemyAtEdge();
-  const waveScale = 1 + state.wave * 0.1;
-  const eliteScale = elite ? 1.8 : 1;
+  const hpScale = (1 + state.wave * 0.07) * state.waveTuning.hpScale;
+  const speedScale = (1 + state.wave * 0.008) * state.waveTuning.speedScale;
   const enemy = {
     x: p.x,
     y: p.y,
     type,
-    ai: type.ai || "chase",
-    hp: type.hp * waveScale * eliteScale,
-    maxHp: type.hp * waveScale * eliteScale,
-    speed: type.speed * (1 + state.wave * 0.015) * (elite ? 1.08 : 1),
+    hp: type.hp * hpScale * (elite ? 1.45 : 1),
+    maxHp: type.hp * hpScale * (elite ? 1.45 : 1),
+    speed: type.speed * speedScale * (elite ? 1.08 : 1),
     burn: 0,
     poison: 0,
     burnTimer: 0,
     poisonTimer: 0,
     hitFlash: 0,
+    vx: 0,
+    vy: 0,
     kbX: 0,
     kbY: 0,
     contactTimer: 0,
     dead: false,
     elite,
+    isBoss: false,
     ...overrides,
   };
   state.enemies.push(enemy);
@@ -288,12 +421,26 @@ function spawnEnemy(type = pickEnemyType(), elite = false, overrides = {}) {
   return enemy;
 }
 
+function spawnBoss(bossDef, overrides = {}) {
+  const boss = spawnEnemy(bossDef, true, {
+    ...overrides,
+    type: bossDef,
+    isBoss: true,
+    bossName: bossDef.name,
+    hp: bossDef.hp * state.waveTuning.hpScale,
+    maxHp: bossDef.hp * state.waveTuning.hpScale,
+    speed: bossDef.speed * state.waveTuning.speedScale,
+  });
+  state.bossAlive = boss;
+  callHooks("onBossSpawn", { boss });
+  return boss;
+}
+
 function pushEnemy(enemy, fromX, fromY, force) {
-  const dx = enemy.x - fromX;
-  const dy = enemy.y - fromY;
-  const d = Math.hypot(dx, dy) || 1;
-  enemy.kbX += (dx / d) * force;
-  enemy.kbY += (dy / d) * force;
+  const resist = enemy.type.knockbackResist ?? 0;
+  const d = Math.hypot(enemy.x - fromX, enemy.y - fromY) || 1;
+  enemy.kbX += ((enemy.x - fromX) / d) * force * (1 - resist);
+  enemy.kbY += ((enemy.y - fromY) / d) * force * (1 - resist);
 }
 
 function fireBullet(angle, dmgMult = 1, speedMult = 1, size = turret.bulletSize, pierceBonus = 0) {
@@ -312,16 +459,28 @@ function fireBullet(angle, dmgMult = 1, speedMult = 1, size = turret.bulletSize,
   callHooks("onShoot", { angle });
 }
 
+function blast(x, y, range, damage, hurtsTurret = false) {
+  state.effects.push({ type: "ring", x, y, radius: 8, max: range, life: 0.3, color: "#9befff88" });
+  for (const enemy of state.enemies) {
+    if (enemy.dead) continue;
+    const d = Math.hypot(enemy.x - x, enemy.y - y);
+    if (d < range) {
+      enemy.hp -= damage * (1 - (d / range) * 0.65);
+      enemy.hitFlash = 0.12;
+      pushEnemy(enemy, x, y, 150 * (1 - d / range));
+    }
+  }
+  if (hurtsTurret && Math.hypot(center.x - x, center.y - y) < range + CORE_RADIUS) dealTurretDamage(damage);
+}
+
 function tryShoot(dt) {
   const firing = mouse.down || keys.has(" ");
   turret.shootCd -= dt;
   if (!firing || turret.shootCd > 0) return;
   turret.shootCd = 1 / (turret.fireRate + turret.overdrive);
   for (let i = 0; i < turret.multiShot; i++) {
-    fireBullet(turret.angle + (i - (turret.multiShot - 1) / 2) * 0.09 + rand(-turret.spread, turret.spread));
-  }
-  for(const weapon of modWeapons){
-    weapon.fire(ModAPI.getContext());
+    const spread = (i - (turret.multiShot - 1) / 2) * 0.09 + rand(-turret.spread, turret.spread);
+    fireBullet(turret.angle + spread);
   }
 }
 
@@ -335,42 +494,14 @@ function dealTurretDamage(amount) {
     remaining -= absorbed;
   }
   turret.hp -= remaining;
-  if (turret.vampBurst > 0) turret.overdriveTimer = Math.max(turret.overdriveTimer, 3.1);
+  callHooks("onTurretDamaged", { amount: remaining, blocked: amount - remaining });
   state.shake = Math.min(18, state.shake + amount * 0.26);
   if (turret.hp <= 0) {
     turret.hp = 0;
     state.gameOver = true;
+    callHooks("onGameOver", { wave: state.wave, score: state.score });
     showEnd();
   }
-}
-
-function onEnemyKilled(enemy) {
-  if (enemy.dead) return;
-  enemy.dead = true;
-  state.score += enemy.type.xp * (enemy.elite ? 1.6 : 1);
-  gainXp(enemy.type.xp * (enemy.elite ? 1.3 : 1));
-  if (turret.shieldOnKill > 0) turret.shield = Math.min(turret.maxShield, turret.shield + turret.shieldOnKill);
-
-  if (enemy.type.splitOnDeath && !enemy.elite) {
-    for (let i = 0; i < 2; i++) spawnEnemy(enemyTypes[0], false, { x: enemy.x + rand(-8, 8), y: enemy.y + rand(-8, 8), hp: 23 + state.wave * 1.9, maxHp: 23 + state.wave * 1.9, speed: 116 + state.wave * 2 });
-  }
-  if (enemy.type.explodeRange) blast(enemy.x, enemy.y, enemy.type.explodeRange, enemy.type.explodeDamage, true);
-
-  callHooks("onEnemyKilled", { enemy });
-}
-
-function blast(x, y, range, damage, hurtsTurret = false) {
-  state.effects.push({ type: "ring", x, y, radius: 8, max: range, life: 0.3, color: "#9befff88" });
-  for (const enemy of state.enemies) {
-    if (enemy.dead) continue;
-    const d = Math.hypot(enemy.x - x, enemy.y - y);
-    if (d < range) {
-      enemy.hp -= damage * (1 - (d / range) * 0.65);
-      enemy.hitFlash = 0.12;
-      pushEnemy(enemy, x, y, 160 * (1 - d / range));
-    }
-  }
-  if (hurtsTurret && Math.hypot(center.x - x, center.y - y) < range + TURRET_RADIUS) dealTurretDamage(damage);
 }
 
 function gainXp(amount) {
@@ -383,16 +514,34 @@ function gainXp(amount) {
   }
 }
 
+function onEnemyKilled(enemy) {
+  if (enemy.dead) return;
+  enemy.dead = true;
+  state.score += enemy.type.xp * (enemy.isBoss ? 2.2 : enemy.elite ? 1.6 : 1);
+  gainXp(enemy.type.xp * (enemy.isBoss ? 2 : 1.2));
+  if (turret.shieldOnKill > 0) turret.shield = Math.min(turret.maxShield, turret.shield + turret.shieldOnKill);
+
+  if (enemy.type.splitOnDeath && !enemy.isBoss) {
+    for (let i = 0; i < 2; i++) spawnEnemy(enemyTypes[0], false, { x: enemy.x + rand(-8, 8), y: enemy.y + rand(-8, 8) });
+  }
+  if (enemy.type.explodeRange) blast(enemy.x, enemy.y, enemy.type.explodeRange, enemy.type.explodeDamage, true);
+
+  if (enemy.isBoss) {
+    state.bossAlive = null;
+    callHooks("onBossKilled", { boss: enemy });
+  }
+  callHooks("onEnemyKilled", { enemy });
+}
+
 function chainLightning(fromEnemy, depth = 0, hit = new Set()) {
   if (depth > 3) return;
   hit.add(fromEnemy);
-  const next = state.enemies
+  const target = state.enemies
     .filter((e) => !e.dead && !hit.has(e))
-    .map((e) => ({ enemy: e, d: Math.hypot(e.x - fromEnemy.x, e.y - fromEnemy.y) }))
+    .map((e) => ({ e, d: Math.hypot(e.x - fromEnemy.x, e.y - fromEnemy.y) }))
     .filter((e) => e.d <= turret.chainRange)
-    .sort((a, b) => a.d - b.d)[0];
-  if (!next) return;
-  const target = next.enemy;
+    .sort((a, b) => a.d - b.d)[0]?.e;
+  if (!target) return;
   target.hp -= turret.bulletDamage * turret.chainDamageFactor * (1 - depth * 0.14);
   target.hitFlash = 0.2;
   pushEnemy(target, fromEnemy.x, fromEnemy.y, 90);
@@ -404,18 +553,42 @@ function chainLightning(fromEnemy, depth = 0, hit = new Set()) {
 function updateRotatingShields(dt) {
   if (!turret.rotatingShields) return;
   for (let i = 0; i < turret.rotatingShields; i++) {
-    const angle = state.time * turret.rotatingShieldSpeed + (Math.PI * 2 * i) / turret.rotatingShields;
-    const sx = center.x + Math.cos(angle) * turret.rotatingShieldRadius;
-    const sy = center.y + Math.sin(angle) * turret.rotatingShieldRadius;
-    for (const enemy of state.enemies) {
-      if (enemy.dead) continue;
-      if (Math.hypot(enemy.x - sx, enemy.y - sy) <= enemy.type.radius + 10) {
-        enemy.hp -= turret.rotatingShieldDamage * dt * 2;
-        enemy.hitFlash = 0.12;
-        pushEnemy(enemy, sx, sy, turret.rotatingShieldKnockback * dt);
+    const a = state.time * turret.rotatingShieldSpeed + (Math.PI * 2 * i) / turret.rotatingShields;
+    const sx = center.x + Math.cos(a) * turret.rotatingShieldRadius;
+    const sy = center.y + Math.sin(a) * turret.rotatingShieldRadius;
+    for (const e of state.enemies) {
+      if (e.dead) continue;
+      if (Math.hypot(e.x - sx, e.y - sy) <= e.type.radius + 10) {
+        e.hp -= turret.rotatingShieldDamage * dt * 2;
+        pushEnemy(e, sx, sy, turret.rotatingShieldKnockback * dt);
       }
     }
   }
+}
+
+function updateEnemyAi(enemy, dt) {
+  const ai = state.modAiById.get(enemy.type.ai) || aiHandlers[enemy.type.ai] || aiHandlers.chaser;
+  ai(enemy, dt, ModAPI.getContext());
+}
+
+function updateModProjectiles(dt) {
+  for (const p of state.modProjectiles) {
+    p.life -= dt;
+    if (p.update) p.update(p, dt, ModAPI.getContext());
+    else {
+      p.x += (p.vx || 0) * dt;
+      p.y += (p.vy || 0) * dt;
+    }
+
+    for (const enemy of state.enemies) {
+      if (enemy.dead) continue;
+      if (Math.hypot(p.x - enemy.x, p.y - enemy.y) <= (p.radius || 4) + enemy.type.radius) {
+        if (p.onHit) p.onHit(enemy, p, ModAPI.getContext());
+        if (!p.piercing) p.life = 0;
+      }
+    }
+  }
+  state.modProjectiles = state.modProjectiles.filter((p) => p.life > 0);
 }
 
 function awardUpgrade(upgrade) {
@@ -427,21 +600,59 @@ function awardUpgrade(upgrade) {
   callHooks("onUpgradeAwarded", { upgrade });
 }
 
+
+function getRarityWeightsForWave(wave) {
+  let selected = rarityWeightsByWave[0]?.weights || { common: 1 };
+  for (const row of rarityWeightsByWave) {
+    if (wave >= row.minWave) selected = row.weights;
+  }
+  return selected;
+}
+
+function rollRarityForUpgrade(upgrade, wave) {
+  if (upgrade.rarity) return upgrade.rarity;
+  const weights = getRarityWeightsForWave(wave);
+  const entries = Object.entries(weights).filter(([, w]) => w > 0);
+  const total = entries.reduce((acc, [, w]) => acc + w, 0) || 1;
+  let r = Math.random() * total;
+  for (const [id, w] of entries) {
+    r -= w;
+    if (r <= 0) return id;
+  }
+  return entries[0]?.[0] || "common";
+}
+
 function eligibleUpgrades() {
-  return upgrades.filter((u) => !u.requires || u.requires.every((r) => state.activeUpgrades.some((x) => x.name === r)));
+  let list = upgrades.filter((u) => !u.requires || u.requires.every((r) => state.activeUpgrades.some((x) => x.name === r)));
+  for (const f of state.modUpgradeFilters) {
+    try { list = f(list, ModAPI.getContext()) || list; } catch (err) { console.error("[mod upgrade filter]", err); }
+  }
+  return list;
 }
 
 function showUpgradeSelection() {
   state.pausedForUpgrade = true;
   ui.overlay.classList.remove("hidden");
   ui.title.textContent = `Level ${turret.level} upgrade`;
-  ui.subtitle.textContent = "Pick your power spike";
+  ui.subtitle.textContent = `Pick ${state.upgradePickCount} option${state.upgradePickCount > 1 ? "s" : ""}`;
   ui.choices.innerHTML = "";
-  const picks = [...eligibleUpgrades()].sort(() => Math.random() - 0.5).slice(0, 3);
+
+  const pool = [...eligibleUpgrades()].sort(() => Math.random() - 0.5);
+  let picks = pool.slice(0, Math.max(1, state.upgradePickCount)).map((u) => ({ ...u, rolledRarity: rollRarityForUpgrade(u, state.wave) }));
+  const payload = { picks, pickCount: state.upgradePickCount };
+  callHooks("onPreUpgradeChoices", payload);
+  if (Array.isArray(payload.picks) && payload.picks.length) {
+    picks = payload.picks.slice(0, Math.max(1, payload.pickCount || state.upgradePickCount));
+  }
+
   picks.forEach((u) => {
     const card = document.createElement("button");
-    card.className = "choice";
-    card.innerHTML = `<h3>${u.name}</h3><p>${u.desc}${u.tree ? ` · Tree: ${u.tree}` : ""}</p>`;
+    const rarityId = u.rolledRarity || u.rarity || "common";
+    const rarityMeta = upgradeRarities[rarityId] || upgradeRarities.common;
+    card.className = `choice rarity-${rarityId}`;
+    card.style.borderColor = rarityMeta.border;
+    card.style.boxShadow = `inset 0 0 0 1px ${rarityMeta.border}, 0 0 16px ${rarityMeta.glow}`;
+    card.innerHTML = `<div class="rarity-tag" style="color:${rarityMeta.color}">${rarityMeta.label}</div><h3>${u.name}</h3><p>${u.desc}${u.tree ? ` · Tree: ${u.tree}` : ""}</p>`;
     card.onclick = () => {
       awardUpgrade(u);
       ui.overlay.classList.add("hidden");
@@ -464,45 +675,49 @@ function showEnd() {
   ui.choices.appendChild(retry);
 }
 
-function startNextWave() {
-  state.wave += 1;
-  state.enemyBudget = Math.floor(28 + state.wave * 8 + Math.pow(state.wave, 1.28) * 2.4);
-  state.spawnRate = clamp(0.76 - state.wave * 0.017, 0.16, 1);
-  gainXp(30 + state.wave * 7);
-  if (state.wave % 5 === 0) spawnEnemy(enemyTypes[Math.min(enemyTypes.length - 1, Math.floor(state.wave / 4))], true);
-  callHooks("onWaveStart", { wave: state.wave });
+function getWaveEntry(wave) {
+  return state.waveTable[Math.max(0, wave - 1)] || state.waveTable[state.waveTable.length - 1];
 }
 
-function updateModProjectiles(dt) {
-  for (const p of state.modProjectiles) {
-    p.life -= dt;
-    if (p.update) p.update(p, dt, ModAPI.getContext());
-    else {
-      p.x += (p.vx || 0) * dt;
-      p.y += (p.vy || 0) * dt;
-    }
+function beginWave(wave = state.wave) {
+  state.wave = wave;
+  const base = getWaveEntry(wave);
+  const ctxWave = {
+    wave,
+    budget: Math.floor(base.budget * state.waveTuning.budgetScale),
+    spawnRate: base.spawnRate * state.waveTuning.spawnRateScale,
+    xpReward: base.xpReward,
+    weights: { ...base.weights },
+    bossId: base.bossId,
+  };
 
-    for (const enemy of state.enemies) {
-      if (enemy.dead) continue;
-      const hitDist = (p.radius || 4) + enemy.type.radius;
-      if (Math.hypot(p.x - enemy.x, p.y - enemy.y) <= hitDist) {
-        if (p.onHit) p.onHit(enemy, p, ModAPI.getContext());
-        if (!p.piercing) p.life = 0;
-      }
-    }
+  for (const fn of state.modWaveBuilders) {
+    try { fn(ctxWave, ModAPI.getContext()); } catch (err) { console.error("[mod wave builder]", err); }
   }
-  state.modProjectiles = state.modProjectiles.filter((p) => p.life > 0);
+
+  state.waveQueue = {
+    budget: Math.max(0, Math.floor(ctxWave.budget)),
+    spawnRate: clamp(ctxWave.spawnRate, 0.1, 2),
+    timer: 0,
+    weights: ctxWave.weights,
+    bossId: ctxWave.bossId,
+  };
+
+  gainXp(ctxWave.xpReward || 0);
+  if (ctxWave.bossId) ModAPI.spawnBoss(ctxWave.bossId);
+  callHooks("onWaveStart", ctxWave);
 }
 
 function update(dt) {
   if (state.pausedForUpgrade || state.gameOver) return;
+
   state.time += dt;
-  state.shake *= 0.86;
+  state.shake *= 0.87;
   turret.overdrive = turret.overdriveTimer > 0 ? 4.8 : 0;
   turret.overdriveTimer = Math.max(0, turret.overdriveTimer - dt);
   turret.hp = Math.min(turret.maxHp, turret.hp + turret.regen * dt);
-
   turret.angle = Math.atan2(mouse.y - center.y, mouse.x - center.x);
+
   tryShoot(dt);
   updateRotatingShields(dt);
   updateModProjectiles(dt);
@@ -517,22 +732,25 @@ function update(dt) {
     }
   }
 
-  state.spawnTimer -= dt;
-  if (state.enemyBudget > 0 && state.spawnTimer <= 0) {
-    const type = pickEnemyType();
-    if (type.cost <= state.enemyBudget || state.enemyBudget < 8) {
+  state.waveQueue.timer -= dt;
+  if (state.waveQueue.budget > 0 && state.waveQueue.timer <= 0) {
+    const type = weightedEnemy(state.waveQueue.weights);
+    if (type.cost <= state.waveQueue.budget || state.waveQueue.budget < 8) {
       spawnEnemy(type);
-      state.enemyBudget -= type.cost;
-      state.spawnTimer = state.spawnRate * rand(0.78, 1.18);
-    } else state.enemyBudget -= 1;
+      state.waveQueue.budget -= type.cost;
+      state.waveQueue.timer = state.waveQueue.spawnRate * rand(0.8, 1.16);
+    } else state.waveQueue.budget -= 1;
   }
 
-  if (state.enemyBudget <= 0 && state.enemies.filter((e) => !e.dead).length === 0) startNextWave();
+  if (state.waveQueue.budget <= 0 && state.enemies.every((e) => e.dead)) beginWave(state.wave + 1);
 
   for (const bullet of state.bullets) {
     bullet.x += bullet.vx * dt;
     bullet.y += bullet.vy * dt;
-    if (bullet.x < -30 || bullet.x > canvas.width + 30 || bullet.y < -30 || bullet.y > canvas.height + 30) { bullet.dead = true; continue; }
+    if (bullet.x < -35 || bullet.x > canvas.width + 35 || bullet.y < -35 || bullet.y > canvas.height + 35) {
+      bullet.dead = true;
+      continue;
+    }
 
     for (const enemy of state.enemies) {
       if (enemy.dead) continue;
@@ -542,8 +760,9 @@ function update(dt) {
       let dmg = bullet.damage * (Math.random() < turret.critChance ? turret.critMult : 1);
       if (enemy.hp / enemy.maxHp > 0.75) dmg *= 1 + turret.armorShred;
       enemy.hp -= dmg;
-      enemy.hitFlash = 0.11;
+      enemy.hitFlash = 0.12;
       pushEnemy(enemy, center.x, center.y, turret.bulletKnockback);
+      callHooks("onBulletHit", { enemy, bullet, damage: dmg });
 
       if (bullet.poison > 0) { enemy.poison = Math.max(enemy.poison, bullet.poison); enemy.poisonTimer = turret.poisonDuration; }
       if (bullet.burn > 0) { enemy.burn = Math.max(enemy.burn, bullet.burn); enemy.burnTimer = turret.burnDuration; }
@@ -553,83 +772,87 @@ function update(dt) {
       if (enemy.hp <= 0) onEnemyKilled(enemy);
       else if (turret.chainChance > 0 && Math.random() < turret.chainChance) chainLightning(enemy);
 
-      if (turret.ricochetChance > 0 && Math.random() < turret.ricochetChance) { bullet.vx *= -1; bullet.vy *= -1; bullet.pierce = Math.max(bullet.pierce, 0); }
-      else if (--bullet.pierce < 0) { bullet.dead = true; break; }
+      if (turret.ricochetChance > 0 && Math.random() < turret.ricochetChance) {
+        bullet.vx *= -1;
+        bullet.vy *= -1;
+        bullet.pierce = Math.max(0, bullet.pierce);
+      } else if (--bullet.pierce < 0) {
+        bullet.dead = true;
+        break;
+      }
     }
   }
 
   for (const enemy of state.enemies) {
     if (enemy.dead) continue;
-    const dx = center.x - enemy.x;
-    const dy = center.y - enemy.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    const ai = enemyAIs[enemy.ai] || enemyAIs["chase"];
-    ai(enemy, dt, {
-      center,
-      state,
-      turret
-    });
+
+    updateEnemyAi(enemy, dt);
+
+    enemy.x += enemy.vx * dt + enemy.kbX * dt;
+    enemy.y += enemy.vy * dt + enemy.kbY * dt;
+    enemy.vx *= 0.9;
+    enemy.vy *= 0.9;
     enemy.kbX *= 0.82;
     enemy.kbY *= 0.82;
-    enemy.attackCooldown ??= 0;
-    enemy.attackCooldown -= dt;
 
     if (enemy.poisonTimer > 0) { enemy.poisonTimer -= dt; enemy.hp -= enemy.poison * dt; }
     if (enemy.burnTimer > 0) { enemy.burnTimer -= dt; enemy.hp -= enemy.burn * dt; }
 
-    const coreDist = Math.hypot(enemy.x - center.x, enemy.y - center.y);
-    const minDist = CORE_COLLISION_RADIUS + enemy.type.radius;
-    if (coreDist < minDist) {
-      const nx = (enemy.x - center.x) / (coreDist || 1);
-      const ny = (enemy.y - center.y) / (coreDist || 1);
-      const pushOut = minDist - coreDist;
-    
-      enemy.x += nx * pushOut;
-      enemy.y += ny * pushOut;
-    
-      enemy.kbX += nx * 8;
-      enemy.kbY += ny * 8;
-    
-      if (enemy.attackCooldown <= 0) {
-        dealTurretDamage(enemy.type.touch);
-        enemy.attackCooldown = 0.4; // enemy attacks every 0.4s
-      }
-    
-      if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 4)
-        enemy.hp -= turret.bulletDamage * 0.85;
-    
-      if (enemy.type.id === "bomber") enemy.hp = -1;
-    }
+    const d = Math.hypot(enemy.x - center.x, enemy.y - center.y);
+    const minDist = CORE_RADIUS + enemy.type.radius;
+    if (d < minDist) {
+      const nx = (enemy.x - center.x) / (d || 1);
+      const ny = (enemy.y - center.y) / (d || 1);
+      const overlap = minDist - d;
+      enemy.x += nx * overlap;
+      enemy.y += ny * overlap;
+      enemy.kbX += nx * 30;
+      enemy.kbY += ny * 30;
 
-    enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
+      enemy.contactTimer += dt;
+      if (enemy.contactTimer >= 0.08) {
+        dealTurretDamage(enemy.type.touch * 0.5);
+        enemy.contactTimer = 0;
+      }
+      if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 4) enemy.hp -= turret.bulletDamage * 0.85;
+      if (enemy.type.id === "bomber") enemy.hp = -1;
+    } else enemy.contactTimer = 0;
+
     if (enemy.hp <= 0) onEnemyKilled(enemy);
+    enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
   }
 
   for (let i = 0; i < turret.orbitals; i++) {
     const a = state.time * 1.85 + (Math.PI * 2 * i) / turret.orbitals;
     const ox = center.x + Math.cos(a) * 88;
     const oy = center.y + Math.sin(a) * 88;
-    const t = state.enemies.filter((e) => !e.dead).map((e) => ({ e, d: Math.hypot(e.x - ox, e.y - oy) })).sort((a1, b1) => a1.d - b1.d)[0];
-    if (t && t.d < turret.orbitalRange && Math.random() < dt * turret.orbitalFireRate) {
-      fireBullet(Math.atan2(t.e.y - oy, t.e.x - ox), turret.orbitalDamageMult, 0.9, 3, turret.orbitalPierceBonus);
+    const target = state.enemies
+      .filter((e) => !e.dead)
+      .map((e) => ({ e, d: Math.hypot(e.x - ox, e.y - oy) }))
+      .sort((a1, b1) => a1.d - b1.d)[0];
+    if (target && target.d < turret.orbitalRange && Math.random() < dt * turret.orbitalFireRate) {
+      fireBullet(Math.atan2(target.e.y - oy, target.e.x - ox), turret.orbitalDamageMult, 0.9, 3, turret.orbitalPierceBonus);
     }
   }
 
   callHooks("onUpdate", { dt });
 
   state.bullets = state.bullets.filter((b) => !b.dead);
-  state.enemies = state.enemies.filter((e) => e.hp > 0 && !e.dead);
+  state.enemies = state.enemies.filter((e) => !e.dead && e.hp > 0);
+
   ui.wave.textContent = `Wave ${state.wave}`;
   ui.hp.textContent = `HP: ${Math.ceil(turret.hp)} / ${Math.ceil(turret.maxHp)}`;
   ui.shield.textContent = `Shield: ${Math.ceil(turret.shield)}${turret.maxShield ? ` / ${Math.ceil(turret.maxShield)}` : ""}`;
   ui.xp.textContent = `XP: ${Math.floor(turret.xp)} / ${turret.xpToLevel}`;
+  ui.boss.textContent = state.bossAlive ? `Boss: ${state.bossAlive.bossName} (${Math.max(0, Math.ceil(state.bossAlive.hp))})` : "Boss: None";
+  refreshHudStats();
 }
 
 function draw() {
-  const shakeX = rand(-state.shake, state.shake);
-  const shakeY = rand(-state.shake, state.shake);
+  const sx = rand(-state.shake, state.shake);
+  const sy = rand(-state.shake, state.shake);
   ctx.save();
-  ctx.translate(shakeX, shakeY);
+  ctx.translate(sx, sy);
   ctx.fillStyle = "#0b1327";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -704,6 +927,12 @@ function draw() {
       ctx.beginPath();
       ctx.arc(fx.x, fx.y, fx.radius, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (fx.type === "text") {
+      fx.life -= 1 / 60;
+      fx.y -= 0.4;
+      ctx.fillStyle = fx.color || "#fff";
+      ctx.font = "bold 14px Inter, sans-serif";
+      ctx.fillText(fx.text, fx.x, fx.y);
     } else if (state.modEffectDrawers[fx.type]) {
       state.modEffectDrawers[fx.type](fx, ctx, ModAPI.getContext());
     }
@@ -730,8 +959,17 @@ canvas.addEventListener("mousemove", (event) => {
 });
 canvas.addEventListener("mousedown", () => (mouse.down = true));
 window.addEventListener("mouseup", () => (mouse.down = false));
-window.addEventListener("keydown", (event) => keys.add(event.key.toLowerCase()));
+window.addEventListener("keydown", (event) => {
+  const key = event.key.toLowerCase();
+  keys.add(key);
+  for (const bind of state.modKeybinds.values()) {
+    if (bind.key === key) {
+      try { bind.handler({ key, event }, ModAPI.getContext()); } catch (err) { console.error("[mod keybind]", err); }
+    }
+  }
+});
 window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
 
 refreshUpgradeList();
+beginWave(1);
 loadMods().finally(() => requestAnimationFrame(loop));

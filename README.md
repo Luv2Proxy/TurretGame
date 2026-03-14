@@ -8,15 +8,17 @@ A fast-paced 2D wave-survival turret game built with HTML5 Canvas.
 2. Open `http://localhost:4173`.
 3. Aim with your mouse.
 4. Hold mouse button (or Space) to fire.
-5. Survive waves, level up, and pick absurd upgrade combinations.
+5. Survive fixed waves, RNG enemy mixes, and bosses.
 
 ## Features
 
 - Center-core turret combat with directional aiming.
-- Multiple enemy archetypes (runners, tanks, splitters, leeches, bombers, plus modded enemies).
-- Upgrade trees and chained upgrade prerequisites (base game + mod-defined upgrades).
-- Knockback, anti-clipping core collision separation, orbitals, rotating shields, status effects, and wave scaling.
-- Active-upgrade panel with stack tracking.
+- Fixed wave table with easier early ramp, weighted RNG enemy mixes, and recurring bosses.
+- Base + mod-defined enemies, bosses, AIs, projectiles, and upgrade trees.
+- Upgrade cards now have rarity tiers (common → legendary) with weighted rolls that can be modded.
+- Upgrade picks can be increased and controlled globally or per-level by mods.
+- Knockback, anti-clipping core collision separation, orbitals, rotating shields, status effects.
+- Active-upgrade panel with stack tracking and custom mod panels.
 
 ## Modding Support (JavaScript)
 
@@ -26,17 +28,38 @@ Mods are plain JS files loaded from `mods/mods.json`.
 - Example mod: `mods/example-mod.js`
 - Runtime API: `window.TurretGameModAPI`
 
-### What mods can add
+### Core mod powers
 
-- GUI panels (`addPanel`)
-- Enemies (`registerEnemy`)
-- Upgrades and upgrade trees (`registerUpgrade`, optional `tree`/`requires`)
-- Effects (`registerEffectType`, `addEffect`)
-- Projectiles (`spawnProjectile`)
-- Gameplay hooks (`registerHook` for `onInit`, `onUpdate`, `onDraw`, `onEnemySpawn`, `onEnemyKilled`, `onUpgradeAwarded`, `onWaveStart`, `onShoot`)
+- **Content registration**
+  - `registerEnemy`, `registerBoss`, `registerAI`
+  - `registerUpgrade` (with `tree`, `requires`, and optional `rarity`)
+  - `registerRarity`, `setUpgradeRarity`, `setRarityWeightsTable`
+  - `registerProjectileType`, `spawnProjectileType`, `spawnProjectile`
+  - `registerEffectType`, `addEffect`
+- **Wave and progression control**
+  - `registerWaveTable`, `setWaveEntry`, `setGlobalWaveTuning`, `registerWaveBuilder`
+  - `setUpgradePickCount`, `registerUpgradeFilter`
+- **UI and interaction**
+  - `addPanel`, `registerHudStat`
+  - `registerKeybind`, `createFloatingText`
+- **Spawn and runtime control**
+  - `spawnEnemy`, `spawnBoss`
+  - `registerHook` for:
+    - `onInit`, `onUpdate`, `onDraw`
+    - `onEnemySpawn`, `onEnemyKilled`, `onBossSpawn`, `onBossKilled`
+    - `onUpgradeAwarded`, `onPreUpgradeChoices`
+    - `onWaveStart`, `onShoot`, `onBulletHit`, `onTurretDamaged`, `onGameOver`
 
 ### Minimal example
 
 ```js
-window.TurretGameModAPI.registerEnemy({ id: "my-enemy", hp: 80, speed: 70, radius: 14, touch: 12, xp: 20, cost: 10, color: "#44ffaa" });
+window.TurretGameModAPI.registerBoss({
+  id: "my-boss",
+  name: "My Boss",
+  hp: 1800,
+  speed: 44,
+  touch: 30,
+  radius: 36,
+  ai: "juggernaut"
+});
 ```

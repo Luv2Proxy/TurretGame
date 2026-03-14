@@ -165,3 +165,18 @@ h1 {
   opacity: 0.9;
   font-size: 0.9rem;
 }
+
+
+.rarity-tag {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  font-weight: 800;
+}
+
+.choice.rarity-common { background: linear-gradient(180deg, #112949, #0f223d); }
+.choice.rarity-uncommon { background: linear-gradient(180deg, #133a2d, #103125); }
+.choice.rarity-rare { background: linear-gradient(180deg, #102e58, #0d2446); }
+.choice.rarity-epic { background: linear-gradient(180deg, #2d1a4c, #22133a); }
+.choice.rarity-legendary { background: linear-gradient(180deg, #4d2d10, #3e240d); }
