@@ -555,8 +555,8 @@ function update(dt) {
       const pushOut = minDist - coreDist;
       enemy.x += nx * pushOut;
       enemy.y += ny * pushOut;
-      enemy.kbX += nx * 30;
-      enemy.kbY += ny * 30;
+      enemy.kbX += nx * 8;
+      enemy.kbY += ny * 8;
       enemy.contactTimer += dt;
       if (enemy.contactTimer >= 0.08) { dealTurretDamage(enemy.type.touch * 0.5); enemy.contactTimer = 0; }
       if (turret.shockTouch > 0 && Math.random() < turret.shockTouch * dt * 4) enemy.hp -= turret.bulletDamage * 0.85;
