@@ -41,7 +41,16 @@ const state = {
   upgradePickCount: 3,
   waveTable: [],
   waveTuning: { budgetScale: 1, spawnRateScale: 1, hpScale: 1, speedScale: 1 },
-  waveQueue: { budget: 0, spawnRate: 0.8, timer: 0, weights: {}, bossId: null },
+  waveQueue: { budget: 0, spawnRate: 0.8, timer: 0, weights: {}, bossId: null, bossSolo: false },
+  inMenu: true,
+  intermissionTimer: 0,
+  nextWaveQueued: 1,
+  difficulty: "normal",
+  difficultyProfiles: {
+    casual: { budgetMul: 0.72, spawnMul: 1.18, enemyHpMul: 0.84, enemySpeedMul: 0.88, turretHpMul: 1.2, xpMul: 1.18, intermission: 4.8 },
+    normal: { budgetMul: 1, spawnMul: 1, enemyHpMul: 1, enemySpeedMul: 1, turretHpMul: 1, xpMul: 1, intermission: 3.5 },
+    nightmare: { budgetMul: 1.35, spawnMul: 0.84, enemyHpMul: 1.32, enemySpeedMul: 1.18, turretHpMul: 0.85, xpMul: 1.05, intermission: 2.6 },
+  },
   modHooks: {
     onInit: [], onUpdate: [], onDraw: [], onEnemySpawn: [], onEnemyKilled: [], onBossSpawn: [], onBossKilled: [],
     onUpgradeAwarded: [], onPreUpgradeChoices: [], onWaveStart: [], onShoot: [], onBulletHit: [], onTurretDamaged: [], onGameOver: [],
@@ -213,6 +222,7 @@ function buildBaseWaveTable(count = 40) {
       spawnRate: clamp(0.95 - wave * 0.018, 0.14, 1.2),
       xpReward: 24 + wave * 7,
       bossId: wave % 5 === 0 ? bossTypes[(wave / 5 - 1) % bossTypes.length].id : null,
+      bossSolo: wave % 5 === 0,
       weights: {
         runner: clamp(42 - wave, 16, 42),
         splitter: clamp(24 + wave * 0.3, 18, 34),
@@ -266,14 +276,23 @@ const ModAPI = {
   },
   registerWaveTable(table) {
     if (!Array.isArray(table) || !table.length) throw new Error("Wave table must be non-empty array");
-    state.waveTable = table.map((e, i) => ({ wave: i + 1, budget: 30, spawnRate: 0.8, xpReward: 32, weights: {}, bossId: null, ...e }));
+    state.waveTable = table.map((e, i) => ({ wave: i + 1, budget: 30, spawnRate: 0.8, xpReward: 32, weights: {}, bossId: null, bossSolo: false, ...e }));
   },
   setWaveEntry(wave, entry) {
     const idx = Math.max(0, wave - 1);
-    state.waveTable[idx] = { wave, budget: 30, spawnRate: 0.8, xpReward: 32, weights: {}, bossId: null, ...(state.waveTable[idx] || {}), ...entry };
+    state.waveTable[idx] = { wave, budget: 30, spawnRate: 0.8, xpReward: 32, weights: {}, bossId: null, bossSolo: false, ...(state.waveTable[idx] || {}), ...entry };
   },
   setGlobalWaveTuning(partial) {
     state.waveTuning = { ...state.waveTuning, ...partial };
+  },
+  setBossWave(wave, bossId, bossSolo = true) {
+    ModAPI.setWaveEntry(wave, { bossId, bossSolo });
+  },
+  setDifficultyProfiles(profiles) {
+    state.difficultyProfiles = { ...state.difficultyProfiles, ...profiles };
+  },
+  setDifficulty(id) {
+    if (state.difficultyProfiles[id]) state.difficulty = id;
   },
   registerWaveBuilder(builderFn) { state.modWaveBuilders.push(builderFn); },
   registerUpgradeFilter(filterFn) { state.modUpgradeFilters.push(filterFn); },
@@ -392,8 +411,9 @@ function enemyAtEdge() {
 
 function spawnEnemy(type = weightedEnemy(state.waveQueue.weights), elite = false, overrides = {}) {
   const p = enemyAtEdge();
-  const hpScale = (1 + state.wave * 0.07) * state.waveTuning.hpScale;
-  const speedScale = (1 + state.wave * 0.008) * state.waveTuning.speedScale;
+  const diff = state.difficultyProfiles[state.difficulty] || state.difficultyProfiles.normal;
+  const hpScale = (1 + state.wave * 0.07) * state.waveTuning.hpScale * (diff.enemyHpMul || 1);
+  const speedScale = (1 + state.wave * 0.008) * state.waveTuning.speedScale * (diff.enemySpeedMul || 1);
   const enemy = {
     x: p.x,
     y: p.y,
@@ -689,7 +709,12 @@ function beginWave(wave = state.wave) {
     xpReward: base.xpReward,
     weights: { ...base.weights },
     bossId: base.bossId,
+    bossSolo: !!base.bossSolo,
   };
+
+  const diff0 = state.difficultyProfiles[state.difficulty] || state.difficultyProfiles.normal;
+  ctxWave.budget = Math.floor(ctxWave.budget * (diff0.budgetMul || 1));
+  ctxWave.spawnRate = ctxWave.spawnRate * (diff0.spawnMul || 1);
 
   for (const fn of state.modWaveBuilders) {
     try { fn(ctxWave, ModAPI.getContext()); } catch (err) { console.error("[mod wave builder]", err); }
@@ -701,17 +726,78 @@ function beginWave(wave = state.wave) {
     timer: 0,
     weights: ctxWave.weights,
     bossId: ctxWave.bossId,
+    bossSolo: !!ctxWave.bossSolo,
   };
 
-  gainXp(ctxWave.xpReward || 0);
+  const diff = state.difficultyProfiles[state.difficulty] || state.difficultyProfiles.normal;
+  gainXp((ctxWave.xpReward || 0) * (diff.xpMul || 1));
   if (ctxWave.bossId) ModAPI.spawnBoss(ctxWave.bossId);
+  if (ctxWave.bossSolo) state.waveQueue.budget = 0;
   callHooks("onWaveStart", ctxWave);
 }
 
+
+function showMainMenu() {
+  state.inMenu = true;
+  state.pausedForUpgrade = true;
+  ui.overlay.classList.remove("hidden");
+  ui.title.textContent = "Turret Frenzy";
+  ui.subtitle.textContent = "Choose your difficulty and begin";
+  ui.choices.innerHTML = "";
+
+  const makeButton = (id, title, desc) => {
+    const b = document.createElement("button");
+    b.className = "choice";
+    b.innerHTML = `<h3>${title}</h3><p>${desc}</p>`;
+    b.onclick = () => startGame(id);
+    ui.choices.appendChild(b);
+  };
+
+  makeButton("casual", "Casual", "Relaxed pacing, easier enemies, longer breaks");
+  makeButton("normal", "Normal", "Default intended challenge");
+  makeButton("nightmare", "Nightmare", "Faster, harder, relentless pressure");
+}
+
+function startGame(difficultyId = "normal") {
+  state.difficulty = state.difficultyProfiles[difficultyId] ? difficultyId : "normal";
+  const diff = state.difficultyProfiles[state.difficulty];
+  turret.maxHp = Math.round(120 * (diff.turretHpMul || 1));
+  turret.hp = turret.maxHp;
+  state.inMenu = false;
+  state.pausedForUpgrade = false;
+  state.wave = 1;
+  state.nextWaveQueued = 1;
+  state.enemies = [];
+  state.bullets = [];
+  state.modProjectiles = [];
+  state.effects = [];
+  state.intermissionTimer = diff.intermission || 3.5;
+  ui.overlay.classList.add("hidden");
+}
+
+function queueNextWave(nextWave) {
+  state.nextWaveQueued = nextWave;
+  const diff = state.difficultyProfiles[state.difficulty] || state.difficultyProfiles.normal;
+  state.intermissionTimer = diff.intermission || 3.5;
+}
+
 function update(dt) {
-  if (state.pausedForUpgrade || state.gameOver) return;
+  if (state.inMenu || state.pausedForUpgrade || state.gameOver) return;
 
   state.time += dt;
+
+  if (state.intermissionTimer > 0) {
+    state.intermissionTimer -= dt;
+    if (state.intermissionTimer <= 0) beginWave(state.nextWaveQueued || state.wave);
+    ui.wave.textContent = `Wave ${state.wave} starts in ${Math.max(0, state.intermissionTimer).toFixed(1)}s`;
+    ui.hp.textContent = `HP: ${Math.ceil(turret.hp)} / ${Math.ceil(turret.maxHp)}`;
+    ui.shield.textContent = `Shield: ${Math.ceil(turret.shield)}${turret.maxShield ? ` / ${Math.ceil(turret.maxShield)}` : ""}`;
+    ui.xp.textContent = `XP: ${Math.floor(turret.xp)} / ${turret.xpToLevel}`;
+    ui.boss.textContent = "Boss: Preparing";
+    refreshHudStats();
+    callHooks("onUpdate", { dt, inIntermission: true });
+    return;
+  }
   state.shake *= 0.87;
   turret.overdrive = turret.overdriveTimer > 0 ? 4.8 : 0;
   turret.overdriveTimer = Math.max(0, turret.overdriveTimer - dt);
@@ -742,7 +828,7 @@ function update(dt) {
     } else state.waveQueue.budget -= 1;
   }
 
-  if (state.waveQueue.budget <= 0 && state.enemies.every((e) => e.dead)) beginWave(state.wave + 1);
+  if (state.waveQueue.budget <= 0 && state.enemies.every((e) => e.dead)) queueNextWave(state.wave + 1);
 
   for (const bullet of state.bullets) {
     bullet.x += bullet.vx * dt;
@@ -939,6 +1025,14 @@ function draw() {
   }
   state.effects = state.effects.filter((fx) => fx.life === undefined || fx.life > 0);
 
+  if (!state.inMenu && state.intermissionTimer > 0) {
+    ctx.fillStyle = "#d8f7ff";
+    ctx.font = "bold 30px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(`Wave ${state.nextWaveQueued} in ${Math.max(0, state.intermissionTimer).toFixed(1)}s`, canvas.width / 2, 90);
+    ctx.textAlign = "start";
+  }
+
   callHooks("onDraw", { ctx });
   ctx.restore();
 }
@@ -971,5 +1065,7 @@ window.addEventListener("keydown", (event) => {
 window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
 
 refreshUpgradeList();
-beginWave(1);
-loadMods().finally(() => requestAnimationFrame(loop));
+loadMods().finally(() => {
+  showMainMenu();
+  requestAnimationFrame(loop);
+});

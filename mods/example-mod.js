@@ -77,7 +77,7 @@
   api.registerWaveBuilder((waveCtx) => {
     if (waveCtx.wave % 3 === 0) waveCtx.budget += 10;
     if (waveCtx.wave % 4 === 0) waveCtx.spawnRate *= 0.93;
-    if (waveCtx.wave === 7) waveCtx.bossId = "fracture_core";
+    if (waveCtx.wave === 7) { waveCtx.bossId = "fracture_core"; waveCtx.bossSolo = true; }
   });
 
   api.registerUpgradeFilter((choices) => {
@@ -90,6 +90,7 @@
   });
 
   api.setUpgradePickCount(4);
+  api.setBossWave(10, "fracture_core", true);
 
   api.registerKeybind("spawn-glitch", "g", () => {
     api.spawnEnemy("glitch");
